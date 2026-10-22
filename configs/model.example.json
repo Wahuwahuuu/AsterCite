@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "model": {
+    "base_url": "",
+    "model_id": "",
+    "context_window": 32768,
+    "max_output_tokens": 4096,
+    "reasoning": false,
+    "thinking_level": "off",
+    "compat": {
+      "supportsStore": false,
+      "supportsDeveloperRole": false,
+      "supportsReasoningEffort": false,
+      "supportsUsageInStreaming": true,
+      "maxTokensField": "max_tokens",
+      "thinkingFormat": "openai"
+    }
+  },
+  "retrieval": {
+    "corpus_dir": "data/full-v1/corpus",
+    "index_dir": "artifacts/full-v1/pipaper-full-index-v1-e7699c38391f1315",
+    "models_dir": ".cache/models",
+    "profile": "rrf_rerank",
+    "device": "cuda"
+  },
+  "session": {
+    "max_turns": 20,
+    "request_timeout_ms": 90000,
+    "turn_timeout_ms": 180000,
+    "compaction": "native"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "mode": "demo",
+  "papers": [
+    {
+      "paper_id": "1611.09441",
+      "title": "Sentiment Analysis for Twitter: Going Beyond Tweet Text"
+    },
+    {
+      "paper_id": "1705.02394",
+      "title": "Learning Representations of Emotional Speech with Deep Convolutional Generative Adversarial Networks"
+    }
+  ],
+  "model": null,
+  "access_token_required": false
+}

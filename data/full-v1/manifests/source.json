@@ -1,0 +1,8 @@
+{
+  "dataset": "QASPER",
+  "revision": "0.3",
+  "source_archive_sha256": "a28fdf966db827bcee3d873107d6b6669864fb7ca8fbf73a192f5e39191bdb5a",
+  "source_url": "https://qasper-dataset.s3.us-west-2.amazonaws.com/qasper-train-dev-v0.3.tgz",
+  "citation": "https://aclanthology.org/2021.naacl-main.365/",
+  "license": "CC BY 4.0"
+}

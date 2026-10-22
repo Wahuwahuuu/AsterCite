@@ -1,0 +1,3 @@
+* text=auto eol=lf
+data/**/manifests/* -text
+demo/dialogue.json -text

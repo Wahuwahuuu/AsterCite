@@ -1,0 +1,77 @@
+{
+  "mode": "demo",
+  "turns": [
+    {
+      "question": "这篇情感分析论文用了哪些语言特征？",
+      "answer": "论文使用 tf-idf 为推文中的词和话题标签构造文本特征，并结合推文外部链接内容与社交媒体信息进行情感分析。[cite:demo:twitter-features] [cite:demo:twitter-abstract]",
+      "sources": [
+        {
+          "paper_id": "1611.09441",
+          "section": "Feature Extraction",
+          "text": "Text Feature: We use tf-idf based text features to predict the sentiment of a tweet. We perform tf-idf based scoring of words in a tweet and the hashtags present in the tweets. We use the tf-idf vectors to train a classifier and predict the sentiment. This is then used as a stacked prediction feature in the final classifier.",
+          "chunk_id": "demo:twitter-features"
+        },
+        {
+          "paper_id": "1611.09441",
+          "section": "Public paper abstract",
+          "text": "Analysing sentiment of tweets is important as it helps to determine the users' opinion. Knowing people's opinion is crucial for several purposes starting from gathering knowledge about customer base, e-governance, campaigning and many more. In this report, we aim to develop a system to detect the sentiment from tweets. We employ several linguistic features along with some other external sources of information to detect the sentiment of a tweet. We show that augmenting the 140 character-long tweet with information harvested from external urls shared in the tweet as well as Social Media features enhances the sentiment prediction accuracy significantly.",
+          "chunk_id": "demo:twitter-abstract"
+        }
+      ]
+    },
+    {
+      "question": "同一篇论文使用了怎样的推文数据？",
+      "answer": "论文的数据分析部分描述了围绕美国大选收集的推文，以及作者对其中一部分推文进行情感标注的过程。[cite:demo:twitter-dataset]",
+      "sources": [
+        {
+          "paper_id": "1611.09441",
+          "section": "Official arXiv v1 PDF page 1",
+          "text": " discover new sentiment terms from the tweets.\nIn section 2 we present analysis of the data-set. We describe\nthe data-preprocessing that we have done in section 3. In\nsection 4 we describe how the feature-set was extracted, the\nclassification framework, and also the tuning of the param-\neters for reasonable accuracy. In section 5 we report the\nperformance of our system. We also report how the differ-\nent features affect the accuracy of the system. We describe\nhow we harvest new sentiment terms using our framework\nin section 6. In this section we also present how we predict\nstrength of sentiment from the tweets. We finally conclude\nwith some possible future directions of work in section 7.\n\n2. DATA-ANALYSIS\nTweets are short messages, restricted to 140 characters in\n\n{lahari, kishaloy, jiaxiany}@comp.nus.edu.sg\n\nlength. Due to the nature of this microblogging service\n(quick and short messages), people use acronyms, make spelling\nmistakes, use emoticons and other characters that express\nspecial meanings. Following is a brief terminology associ-\nated with tweets:\n\n• Emoticons: These are facial expressions pictorially rep-resented using punctuation and letters. They express user’s mood.\n\n• Mention: The @ symbol is used to refer to other users on the microblog.\n\n• Hashtags: Users commonly use hashtags to mark top-ics. This is primarily done to increase the visibility of their tweets.\n\n• Url: Because of the short nature of tweet, people use external link(s) to provide additional information (in support of their tweet).\n\nOur dataset contains tweets about ‘ObamaCare’ in USA collected during march 2010. It is divided into three subsets (train, dev, and test). Some tweets are manually annotated with one of the following classes.\n\npositive, negative, neutral, unsure, and irrelevant\n\nWe ignore the tweets which are annotated unsure, or irrelevant. We present some preliminary statistics about the training data and test data in Table 1. We observe that there is an imbalance in the",
+          "chunk_id": "demo:twitter-dataset"
+        }
+      ]
+    },
+    {
+      "question": "切换到语音情感论文，它如何学习表示？",
+      "answer": "这篇论文从语谱图中学习语音表示，使用深度卷积生成对抗网络，并讨论无监督学习和多任务学习对情感分类的作用。[cite:demo:speech-abstract] [cite:demo:speech-conclusion]",
+      "sources": [
+        {
+          "paper_id": "1705.02394",
+          "section": "Public paper abstract",
+          "text": "Automatically assessing emotional valence in human speech has historically been a difficult task for machine learning algorithms. The subtle changes in the voice of the speaker that are indicative of positive or negative emotional states are often\"overshadowed\"by voice characteristics relating to emotional intensity or emotional activation. In this work we explore a representation learning approach that automatically derives discriminative representations of emotional speech. In particular, we investigate two machine learning strategies to improve classifier performance: (1) utilization of unlabeled data using a deep convolutional generative adversarial network (DCGAN), and (2) multitask learning. Within our extensive experiments we leverage a multitask annotated emotional corpus as well as a large unlabeled meeting corpus (around 100 hours). Our speaker-independent classification experiments show that in particular the use of unlabeled data in our investigations improves performance of the classifiers and both fully supervised baseline approaches are outperformed considerably. We improve the classification of emotional valence on a discrete 5-point scale to 43.88% and on a 3-point scale to 49.80%, which is competitive to state-of-the-art performance.",
+          "chunk_id": "demo:speech-abstract"
+        },
+        {
+          "paper_id": "1705.02394",
+          "section": "Conclusions",
+          "text": "We investigated the use of unsupervised and multitask learning to improve the performance of an emotional valence classifier. Overall, we found that unsupervised learning yields considerable improvements in classification accuracy for the emotional valence recognition task. The best performing model achieves 43.88% in the 5-class case and 49.80% in the 3-class case with a significant Pearson correlation between continuous target label and prediction of INLINEFORM0 ( INLINEFORM1 ). There is no indication that multitask learning provides any advantage.",
+          "chunk_id": "demo:speech-conclusion"
+        }
+      ]
+    },
+    {
+      "question": "请用中文比较两篇论文的方法，并分别给出依据。",
+      "answer": "**推文情感分析**：从词、话题标签及外部链接等信息构造特征，并从推文中补充情感词。[cite:demo:twitter-features] [cite:demo:twitter-terms]\n\n**语音情感识别**：从语谱图中学习表示，利用深度卷积生成对抗网络探索无监督学习方法。[cite:demo:speech-abstract]\n\n两篇论文处理的输入不同，可以比较特征构建思路，不能据此直接比较模型优劣。",
+      "sources": [
+        {
+          "paper_id": "1611.09441",
+          "section": "Feature Extraction",
+          "text": "Text Feature: We use tf-idf based text features to predict the sentiment of a tweet. We perform tf-idf based scoring of words in a tweet and the hashtags present in the tweets. We use the tf-idf vectors to train a classifier and predict the sentiment. This is then used as a stacked prediction feature in the final classifier.",
+          "chunk_id": "demo:twitter-features"
+        },
+        {
+          "paper_id": "1611.09441",
+          "section": "Official arXiv v1 PDF page 5",
+          "text": "Table 6: Part of new negative terms\n\nterm\n\nfrequency\n\ntweetcongress\n\n19\n\nlie\n\n15\n\ntxgop\n\n11\n\ntaxes\n\n11\n\ntpp\n\n9\n\ndeem\n\n9\n\ngov’t\n\n8\n\nvulnerable\n\n8\n\nsad\n\n7\n\nstupid\n\n7\n\ncancer\n\n7\n\nunconstitutional\n\n7\n\nalso interested in predicting the strength or intensity of the sentiment associated. Consider the following tweets.\n\n• t1: ‘GO TO YOUR US REPS OFFICE ON SATURDAY AND SAY VOTE NO! ON #HCR #Obama #cnn #killthebill #p2 #msnbc #foxnews #congress #tcot’\n\n• t2: ‘Thankfully the Democrat Party isn’t too big to fail. #tcot #hcr’\n\nAlthough both the tweets have negative sentiment towards ‘ObamaCare’, the intensity in both are not the same. The first tweet (t1) is quite aggressive whereas the other one (t2) is not that much. Here we propose a technique to predict the strength of sentiment. We consider few features from the tweet in order to do this. If our classifier predicts the sentiment to be neutral we say that the strength of sentiment is 0. However if it is not i.e., if it is either positive or negative, we increase strength of sentiment for each of the following features of the tweet.\n\n1. Number of capitalized words.\n\n2. Number of strong positive words.\n\n3. Number of strong negative words.\n\n4. Number of weak positive words.\n\n5. Number of weak negative words.\n\nEach of these features contributes to the strength score of\na tweet. Once calculated, we normalize the score within\n[0-5]. Finally we assign sentiment polarity depending on\nthe overall sentiment of the tweet. As for example, if a\ntweet has score of 3 and the overall predicted sentiment is\nnegative then we give it a score of ‘-3’. It denotes that the\ntweet is moderately negative. Having said that, strength of\nsentiment is highly subjective. A tweet can appear to be\nvery much aggressive to some person whereas the same may\nappear to not to be that aggressive to some other person.\n\n7. CONCLUSION\nIn this report we have presented a sentiment analysis tool\nfor Twitter posts. We have discussed the characteristics\nof Twitter that",
+          "chunk_id": "demo:twitter-terms"
+        },
+        {
+          "paper_id": "1705.02394",
+          "section": "Public paper abstract",
+          "text": "Automatically assessing emotional valence in human speech has historically been a difficult task for machine learning algorithms. The subtle changes in the voice of the speaker that are indicative of positive or negative emotional states are often\"overshadowed\"by voice characteristics relating to emotional intensity or emotional activation. In this work we explore a representation learning approach that automatically derives discriminative representations of emotional speech. In particular, we investigate two machine learning strategies to improve classifier performance: (1) utilization of unlabeled data using a deep convolutional generative adversarial network (DCGAN), and (2) multitask learning. Within our extensive experiments we leverage a multitask annotated emotional corpus as well as a large unlabeled meeting corpus (around 100 hours). Our speaker-independent classification experiments show that in particular the use of unlabeled data in our investigations improves performance of the classifiers and both fully supervised baseline approaches are outperformed considerably. We improve the classification of emotional valence on a discrete 5-point scale to 43.88% and on a 3-point scale to 49.80%, which is competitive to state-of-the-art performance.",
+          "chunk_id": "demo:speech-abstract"
+        }
+      ]
+    }
+  ]
+}

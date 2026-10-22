@@ -1,0 +1,315 @@
+{
+  "version": "pipaper-full-corpus-v1",
+  "index_version": "pipaper-full-source-v1-e360ee218d8cc147",
+  "paper_count": 48,
+  "papers": [
+    {
+      "paper_id": "2003.06044",
+      "title": "Local Contextual Attention with Hierarchical Structure for Dialogue Act Recognition",
+      "source_url": "https://arxiv.org/abs/2003.06044",
+      "source_text_sha256": "eebdf8f5f9a128f9142e3f1e969ed2a1e31b1a80c375c834043dd3cf10dff4a8"
+    },
+    {
+      "paper_id": "1912.01252",
+      "title": "Facilitating on-line opinion dynamics by mining expressions of causation. The case of climate change debates on The Guardian",
+      "source_url": "https://arxiv.org/abs/1912.01252",
+      "source_text_sha256": "3887b6dab52feb51c49adf391233aa0fb23c7eaf69173a1e9ffd65b6b9b87b2b"
+    },
+    {
+      "paper_id": "1908.02322",
+      "title": "DpgMedia2019: A Dutch News Dataset for Partisanship Detection",
+      "source_url": "https://arxiv.org/abs/1908.02322",
+      "source_text_sha256": "50ce3ccc961d4cfe2329b8bc5630c66f6b85d31746b55348e97e5c7c90a966ce"
+    },
+    {
+      "paper_id": "1906.10519",
+      "title": "Embedding Projection for Targeted Cross-Lingual Sentiment: Model Comparisons and a Real-World Study",
+      "source_url": "https://arxiv.org/abs/1906.10519",
+      "source_text_sha256": "c2df1ba46105933b5b4564432e8dd89c0e93b5b285d76a9c66b64836b3dd5b39"
+    },
+    {
+      "paper_id": "1909.01383",
+      "title": "Context-Aware Monolingual Repair for Neural Machine Translation",
+      "source_url": "https://arxiv.org/abs/1909.01383",
+      "source_text_sha256": "ccd9ef42ff7f41aed0afcfff98ed0a8bac90c56ac5be06194d72132ddbf3a241"
+    },
+    {
+      "paper_id": "1705.04153",
+      "title": "Dynamic Compositional Neural Networks over Tree Structure",
+      "source_url": "https://arxiv.org/abs/1705.04153",
+      "source_text_sha256": "7925b20e935c229d939e502c62f7ddefd427ec9292a2535778b1d1f387832744"
+    },
+    {
+      "paper_id": "1706.09673",
+      "title": "Improving Distributed Representations of Tweets - Present and Future",
+      "source_url": "https://arxiv.org/abs/1706.09673",
+      "source_text_sha256": "2807422935bb7a035c8245572d7b48352af648fc4274142bc02982a7ca78fdba"
+    },
+    {
+      "paper_id": "1709.10367",
+      "title": "Structured Embedding Models for Grouped Data",
+      "source_url": "https://arxiv.org/abs/1709.10367",
+      "source_text_sha256": "131fe42539d9cd838d66dfff87a9724c0b7e4919702961a9f65ee2cff35b000d"
+    },
+    {
+      "paper_id": "1910.07601",
+      "title": "Contextual Joint Factor Acoustic Embeddings",
+      "source_url": "https://arxiv.org/abs/1910.07601",
+      "source_text_sha256": "fe8e478a50f8b15568891fe050373dc5680f875203c2743612f18fb5e37ffd9d"
+    },
+    {
+      "paper_id": "1907.01468",
+      "title": "How we do things with words: Analyzing text as social and cultural data",
+      "source_url": "https://arxiv.org/abs/1907.01468",
+      "source_text_sha256": "1a396dcf593534f98dd2d088d1b8cc1848affcee167fcea6ac5557072ac86384"
+    },
+    {
+      "paper_id": "1912.08960",
+      "title": "Going Beneath the Surface: Evaluating Image Captioning for Grammaticality, Truthfulness and Diversity",
+      "source_url": "https://arxiv.org/abs/1912.08960",
+      "source_text_sha256": "df2456fac315332fe98a6519eee9449ed04f2bc05dbbd828fdb48df5b17f7e2f"
+    },
+    {
+      "paper_id": "1604.08504",
+      "title": "Detecting\"Smart\"Spammers On Social Network: A Topic Model Approach",
+      "source_url": "https://arxiv.org/abs/1604.08504",
+      "source_text_sha256": "ed520c56aa211c69f880a7af36571ea33a07feee708a45220e24232c3fa20743"
+    },
+    {
+      "paper_id": "1705.02394",
+      "title": "Learning Representations of Emotional Speech with Deep Convolutional Generative Adversarial Networks",
+      "source_url": "https://arxiv.org/abs/1705.02394",
+      "source_text_sha256": "849f81a31aca2f0337d529bab060928feb9c569ff8a4776cd4c43277146da1ad"
+    },
+    {
+      "paper_id": "1909.04453",
+      "title": "Select and Attend: Towards Controllable Content Selection in Text Generation",
+      "source_url": "https://arxiv.org/abs/1909.04453",
+      "source_text_sha256": "59e630a1b394124b7b33d0123dfda0a6d33a16cd4f4cca993d31758cfc3b591c"
+    },
+    {
+      "paper_id": "1911.06191",
+      "title": "Microsoft Research Asia's Systems for WMT19",
+      "source_url": "https://arxiv.org/abs/1911.06191",
+      "source_text_sha256": "78387a25751aa2c05f1d707d0ed9e6c8182bb9b34d6f7808ba95d56472e005c0"
+    },
+    {
+      "paper_id": "2001.09332",
+      "title": "An Analysis of Word2Vec for the Italian Language",
+      "source_url": "https://arxiv.org/abs/2001.09332",
+      "source_text_sha256": "4b1ad25d95520accdb86913be54cdf92b24940f81b53fda622d52ce55e5c81ee"
+    },
+    {
+      "paper_id": "1706.08032",
+      "title": "A Deep Neural Architecture for Sentence-level Sentiment Classification in Twitter Social Networking",
+      "source_url": "https://arxiv.org/abs/1706.08032",
+      "source_text_sha256": "4a57759ecbf0af0c56ea949b69f067218feecdb08edb64e128e32a8676e01c05"
+    },
+    {
+      "paper_id": "1910.04006",
+      "title": "Assessing the Efficacy of Clinical Sentiment Analysis and Topic Extraction in Psychiatric Readmission Risk Prediction",
+      "source_url": "https://arxiv.org/abs/1910.04006",
+      "source_text_sha256": "6513fb6d637dba33e3b5f3aa5fe68ac2cd53f7ec20028d68c1c67a52e44e0941"
+    },
+    {
+      "paper_id": "1705.09665",
+      "title": "Community Identity and User Engagement in a Multi-Community Landscape",
+      "source_url": "https://arxiv.org/abs/1705.09665",
+      "source_text_sha256": "0731ca3e2d59247ee23f39dcb71763a45535e24f631870dd6d694fc9e454ede5"
+    },
+    {
+      "paper_id": "1604.05781",
+      "title": "What we write about when we write about causality: Features of causal statements across large-scale social discourse",
+      "source_url": "https://arxiv.org/abs/1604.05781",
+      "source_text_sha256": "3308bb1b160bce2b629fe662ce3d0dc3a4e887f478c1415a0ae42d0f9385407b"
+    },
+    {
+      "paper_id": "1709.01256",
+      "title": "Semantic Document Distance Measures and Unsupervised Document Revision Detection",
+      "source_url": "https://arxiv.org/abs/1709.01256",
+      "source_text_sha256": "12f6100a84f1590461c48a7a1d26dc292fe7fdc385b183529abe4f762243fd56"
+    },
+    {
+      "paper_id": "1705.07368",
+      "title": "Mixed Membership Word Embeddings for Computational Social Science",
+      "source_url": "https://arxiv.org/abs/1705.07368",
+      "source_text_sha256": "f3244c48e3f70285e788c30735a006697f4569bc7c8a2d2fde49176b6b875df8"
+    },
+    {
+      "paper_id": "1909.05438",
+      "title": "Neural Semantic Parsing in Low-Resource Settings with Back-Translation and Meta-Learning",
+      "source_url": "https://arxiv.org/abs/1909.05438",
+      "source_text_sha256": "badfc7a8a5f249366c9f1c17c0bff1d65db6c09d0e5a17000292a7826ec06680"
+    },
+    {
+      "paper_id": "1611.09441",
+      "title": "Sentiment Analysis for Twitter : Going Beyond Tweet Text",
+      "source_url": "https://arxiv.org/abs/1611.09441",
+      "source_text_sha256": "9b8e68c5bbde6bbb4b7fd014eb3565930cf344771fca46c3c19ece444dc6f49c"
+    },
+    {
+      "paper_id": "1809.01541",
+      "title": "Copenhagen at CoNLL--SIGMORPHON 2018: Multilingual Inflection in Context with Explicit Morphosyntactic Decoding",
+      "source_url": "https://arxiv.org/abs/1809.01541",
+      "source_text_sha256": "888aa25dfbfb490255048aa6b552466eaf0cb9aadf4ce20c3e04fc77ab9f478a"
+    },
+    {
+      "paper_id": "1901.01010",
+      "title": "A Joint Model for Multimodal Document Quality Assessment",
+      "source_url": "https://arxiv.org/abs/1901.01010",
+      "source_text_sha256": "eede61adab93e3d226afa58afb1d64e98acba94b2d3b5967e400800eb8bede76"
+    },
+    {
+      "paper_id": "1908.10084",
+      "title": "Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks",
+      "source_url": "https://arxiv.org/abs/1908.10084",
+      "source_text_sha256": "7783d4e7d65dfa89fc2cd803339a525116357466b17fcb75346556bfcc53e59b"
+    },
+    {
+      "paper_id": "1910.03634",
+      "title": "Prose for a Painting",
+      "source_url": "https://arxiv.org/abs/1910.03634",
+      "source_text_sha256": "5598aa6cd4ebf3f859ef08629c22fd9c3d455ae071ecc811292d7a434710c731"
+    },
+    {
+      "paper_id": "1611.08661",
+      "title": "Knowledge Graph Representation with Jointly Structural and Textual Encoding",
+      "source_url": "https://arxiv.org/abs/1611.08661",
+      "source_text_sha256": "6fdb91a0a18e9d472b0ee5a044716bf5044b0e304e6aab5a83ed9b2b92e3b6ce"
+    },
+    {
+      "paper_id": "1905.11268",
+      "title": "Combating Adversarial Misspellings with Robust Word Recognition",
+      "source_url": "https://arxiv.org/abs/1905.11268",
+      "source_text_sha256": "2274207a446123b37a07eb160ad00c639fc4748fce91e26a2a94a90a6fd5e3f6"
+    },
+    {
+      "paper_id": "1805.07133",
+      "title": "Combining Advanced Methods in Japanese-Vietnamese Neural Machine Translation",
+      "source_url": "https://arxiv.org/abs/1805.07133",
+      "source_text_sha256": "72ffbb94c2f5c20b9102ac737ddcf8e7c626eda8b66f15ed0c417e3c328d7662"
+    },
+    {
+      "paper_id": "1903.11437",
+      "title": "Using Monolingual Data in Neural Machine Translation: a Systematic Study",
+      "source_url": "https://arxiv.org/abs/1903.11437",
+      "source_text_sha256": "05c9620975554bc75e9384fa39c6f117cb4f17c11e2cdb970fdeb5b4af65ee8d"
+    },
+    {
+      "paper_id": "1909.03135",
+      "title": "To lemmatize or not to lemmatize: how word normalisation affects ELMo performance in word sense disambiguation",
+      "source_url": "https://arxiv.org/abs/1909.03135",
+      "source_text_sha256": "ea1593e959e90b1a653660b106b3c228f01e1e2a8f613680fdf866429d7581dc"
+    },
+    {
+      "paper_id": "1809.06537",
+      "title": "Automatic Judgment Prediction via Legal Reading Comprehension",
+      "source_url": "https://arxiv.org/abs/1809.06537",
+      "source_text_sha256": "6f7c36041983a727d947f38c5e71befe734df759be644fe2ed068b9e662dbf91"
+    },
+    {
+      "paper_id": "1810.12196",
+      "title": "ReviewQA: a relational aspect-based opinion reading dataset",
+      "source_url": "https://arxiv.org/abs/1810.12196",
+      "source_text_sha256": "2d50061981e434df140d7e6e3cf662079c8ad5d291604c61e045477b5d459bb3"
+    },
+    {
+      "paper_id": "1910.12574",
+      "title": "A BERT-Based Transfer Learning Approach for Hate Speech Detection in Online Social Media",
+      "source_url": "https://arxiv.org/abs/1910.12574",
+      "source_text_sha256": "5b3cbe228ba9b65cada9bd5be25eb07a4fbe34a3515bf80f92c059673212f87b"
+    },
+    {
+      "paper_id": "1910.08293",
+      "title": "Follow Alice into the Rabbit Hole: Giving Dialogue Agents Understanding of Human Level Attributes.",
+      "source_url": "https://arxiv.org/abs/1910.08293",
+      "source_text_sha256": "edb252c95c810ad1a3aa556cf0b0392498ef5f37bf83b862fa06495b161c188e"
+    },
+    {
+      "paper_id": "1908.08717",
+      "title": "Gender Representation in French Broadcast Corpora and Its Impact on ASR Performance",
+      "source_url": "https://arxiv.org/abs/1908.08717",
+      "source_text_sha256": "9c166ece2692c9635c2d47e2f1cd2c6afa0fe9cf6ca5a577784a9ae3999add72"
+    },
+    {
+      "paper_id": "1802.07862",
+      "title": "Multimodal Named Entity Recognition for Short Social Media Posts",
+      "source_url": "https://arxiv.org/abs/1802.07862",
+      "source_text_sha256": "76b8548f467aca33438f6fc3aed5506076ef704fe6fef8f3c7b3ed8e6fcfa738"
+    },
+    {
+      "paper_id": "1706.01875",
+      "title": "Measuring Offensive Speech in Online Political Discourse",
+      "source_url": "https://arxiv.org/abs/1706.01875",
+      "source_text_sha256": "4620a3c658ede9b323292bdb8123c705203f976cac8a281fa8d99291f379b00d"
+    },
+    {
+      "paper_id": "1909.00105",
+      "title": "Generating Personalized Recipes from Historical User Preferences",
+      "source_url": "https://arxiv.org/abs/1909.00105",
+      "source_text_sha256": "e013f11defd7cd146778b4e439d9ea2e8005d1ed740bf00dc38a9fed1eebc095"
+    },
+    {
+      "paper_id": "1905.07791",
+      "title": "Predicting Annotation Difficulty to Improve Task Routing and Model Performance for Biomedical Information Extraction",
+      "source_url": "https://arxiv.org/abs/1905.07791",
+      "source_text_sha256": "bd22291096bf458812f8f1823206fd0d0ccb3eb80fb97844867921549fff9476"
+    },
+    {
+      "paper_id": "2004.04721",
+      "title": "Translation Artifacts in Cross-lingual Transfer Learning",
+      "source_url": "https://arxiv.org/abs/2004.04721",
+      "source_text_sha256": "2ca36120c22f7208ecc68e5765f2e6f32d38bdd3dba904bf3f91ed19c48f4c4a"
+    },
+    {
+      "paper_id": "2002.07306",
+      "title": "From English To Foreign Languages: Transferring Pre-trained Language Models",
+      "source_url": "https://arxiv.org/abs/2002.07306",
+      "source_text_sha256": "b5a33c31b38fa95090cb7751a961721ae059dd1b04b54587aa8848b3adc91284"
+    },
+    {
+      "paper_id": "2002.01320",
+      "title": "CoVoST: A Diverse Multilingual Speech-To-Text Translation Corpus",
+      "source_url": "https://arxiv.org/abs/2002.01320",
+      "source_text_sha256": "b2217589aa026178ca8f37afe72aa314ecbf72c34222fe9443bffcd7955975e1"
+    },
+    {
+      "paper_id": "1805.10824",
+      "title": "UG18 at SemEval-2018 Task 1: Generating Additional Training Data for Predicting Emotion Intensity in Spanish",
+      "source_url": "https://arxiv.org/abs/1805.10824",
+      "source_text_sha256": "ec5d74d8dec6a1330e62c26ed989ab9736a5a722758411a28e1bad3740027ce4"
+    },
+    {
+      "paper_id": "1612.08205",
+      "title": "Predicting the Industry of Users on Social Media",
+      "source_url": "https://arxiv.org/abs/1612.08205",
+      "source_text_sha256": "878a8c7fbe5cd4f1a15d035a8b3574463ba0da20047e85e62bbf549554336645"
+    },
+    {
+      "paper_id": "1803.05223",
+      "title": "MCScript: A Novel Dataset for Assessing Machine Comprehension Using Script Knowledge",
+      "source_url": "https://arxiv.org/abs/1803.05223",
+      "source_text_sha256": "d7eb075ef97b0b74996204bfc8388d0bdaf06de7c66e5c4b50db56eaf2dc02f9"
+    }
+  ],
+  "files": {
+    "papers.jsonl": "e360ee218d8cc14751343ec90bc49c32c90a43d352f7472378dd4c23311f1654"
+  },
+  "source_archive_sha256": "a28fdf966db827bcee3d873107d6b6669864fb7ca8fbf73a192f5e39191bdb5a",
+  "members": [
+    {
+      "source_split": "train",
+      "member": "qasper-train-v0.3.json",
+      "sha256": "9458bfe76074a8fa8d1685af02bcc73537aa6d338ad20591dfaff1946bc88bf4",
+      "papers": 888
+    },
+    {
+      "source_split": "validation",
+      "member": "qasper-dev-v0.3.json",
+      "sha256": "2ae7ee62a65b1c4225791c70de80c2aad4e8998cf1fd4f09a53103db4f21af93",
+      "papers": 281
+    }
+  ],
+  "license": "CC BY 4.0",
+  "gold_loaded": false
+}

@@ -1,0 +1,27 @@
+[project]
+name = "astercite-retriever"
+version = "1.0.0"
+description = "Local fixed-corpus hybrid retrieval for AsterCite"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[project.optional-dependencies]
+retrieval = [
+    "torch==2.9.1",
+    "transformers==4.57.3",
+    "numpy==2.3.5",
+    "faiss-cpu==1.15.1",
+    "rank-bm25==0.2.2",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
