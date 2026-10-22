@@ -1,11 +1,11 @@
 # AsterCite
 
 [![CI](https://github.com/Wahuwahuuu/AsterCite/actions/workflows/ci.yml/badge.svg)](https://github.com/Wahuwahuuu/AsterCite/actions/workflows/ci.yml)
-[MIT License](LICENSE) · [在线演示](https://astercite.niftyquail4.chatgpt.site) · [正式版本](https://github.com/Wahuwahuuu/AsterCite/releases/tag/v1.0.0) 
+[MIT License](LICENSE) · [下载 Windows 版](https://github.com/Wahuwahuuu/AsterCite/releases/latest) · [在线演示](https://astercite.niftyquail4.chatgpt.site)
 
 面向科研论文多轮问答中的指代缺失、检索证据不足和无依据作答问题，基于 Pi SDK 搭建并优化轻量 Agent Harness，构建集 Query 改写、混合检索、引用生成和会话记忆于一体的分阶段可追溯问答 Agent。
 
-网页版提供论文选择、连续问答和原文引用面板，也可以通过 CLI 使用。
+安装后在自己的电脑上打开网页，选择论文、自由提问、连续追问并阅读原文引用。也可以通过 CLI 使用。
 
 ![AsterCite 网页工作台](docs/images/overview.jpg)
 
@@ -18,7 +18,17 @@
 
 ## 快速开始
 
-需要 Node.js **24.11.1+**、Python **3.12**。
+下载 [Windows x64 安装包](https://github.com/Wahuwahuuu/AsterCite/releases/latest)，安装后从开始菜单打开 AsterCite。
+
+1. 首次启动会准备本地检索模型，下载中断后可继续。
+2. 填写自己的模型服务地址、模型名称和密钥。
+3. 浏览器自动打开后，即可围绕内置论文自由提问。
+
+安装包附带论文库、检索索引和运行环境。推荐 Windows 10 / 11 x64、16 GB 内存、10 GB 可用空间；首次使用需要下载约 4.6 GB 的检索模型。使用方法见 [Windows 安装指南](docs/windows.md)。
+
+## 从源码运行
+
+需要 Node.js **24.11.1+**、Python **3.12**。先启动示例回放：
 
 ```powershell
 git clone https://github.com/Wahuwahuuu/AsterCite.git
@@ -89,6 +99,7 @@ TypeScript 负责 Pi 会话编排、记忆和 CLI；Python worker 负责本地�
 
 ## 文档
 
+- [Windows 安装版](docs/windows.md)
 - [安装与检索环境](docs/environment.md)
 - [模型与会话配置](docs/configuration.md)
 - [演示示例](demo/README.md)

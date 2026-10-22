@@ -63,7 +63,7 @@ export class PythonWorkerClient implements WorkerTransport {
     // Keep preflight failures handled even before the caller awaits readiness.
     void this.readiness.catch(() => {});
     this.process = spawn(options.pythonPath, args, {
-      shell: false, windowsHide: true, env: workerEnvironment(), stdio: "pipe",
+      shell: false, windowsHide: true, env: {...workerEnvironment(),...(options.device==="cpu"?{OMP_NUM_THREADS:"4",MKL_NUM_THREADS:"4",TOKENIZERS_PARALLELISM:"false"}:{})}, stdio: "pipe",
     });
     this.process.stdout.setEncoding("utf8");
     this.process.stdout.on("data", (part: string) => this.read(part));

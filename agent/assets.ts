@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, access } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,9 +51,11 @@ export async function loadAssets(root:string,config:AppConfig):Promise<Assets>{
   return {root,indexVersion:manifest.index_version,publicPapers,evidenceIndex,implementationId,commonPrompt};
 }
 export async function createWorker(assets:Assets,config:AppConfig):Promise<PythonWorkerClient>{
-  const py=join(assets.root,".venv",process.platform==="win32"?"Scripts":"bin",process.platform==="win32"?"python.exe":"python");
+  let py=join(assets.root,".venv",process.platform==="win32"?"Scripts":"bin",process.platform==="win32"?"python.exe":"python");
+  const bundled=await containedPath(assets.root,".runtime/python/python.exe");
+  if(process.platform==="win32"){try{await access(bundled);py=bundled;}catch(e){if((e as NodeJS.ErrnoException).code!=="ENOENT")throw e;}}
   const worker=new PythonWorkerClient({pythonPath:py,workerPath:join(assets.root,"retriever/worker.py"),
     corpusDir:await containedPath(assets.root,config.retrieval.corpus_dir),indexDir:await containedPath(assets.root,config.retrieval.index_dir),
-    modelsDir:await containedPath(assets.root,config.retrieval.models_dir),profile:config.retrieval.profile,device:config.retrieval.device,expectReady:true,readyTimeoutMs:180000,timeoutMs:60000});
+    modelsDir:await containedPath(assets.root,config.retrieval.models_dir),profile:config.retrieval.profile,device:config.retrieval.device,expectReady:true,readyTimeoutMs:180000,timeoutMs:config.retrieval.device==="cpu"?180000:60000});
   try{const ready=await worker.ready();if(ready?.index_version!==assets.indexVersion)throw new RuntimeFailure("INVALID_INDEX","Worker loaded a different index");return worker;}catch(e){worker.close();throw e;}
 }

@@ -1,6 +1,6 @@
 {
   "name": "astercite",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "A research paper question-answering workspace with a web interface and CLI",
   "license": "MIT",
@@ -17,6 +17,7 @@
     "test:public": "python -X utf8 -m unittest discover -s tests/scripts -v",
     "audit": "python -X utf8 scripts/audit_public.py",
     "web": "node agent/web-server.ts",
+    "start": "node desktop/local-app.ts",
     "web:build": "node scripts/build-web.ts"
   },
   "engines": {

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "corpus_dir": "data/full-v1/corpus",
+  "index_dir": "artifacts/bundled-cpu/pipaper-full-index-v1-d39945a58cfb8467",
+  "paper_count": 48,
+  "archive_sha256": "afc49bfcd28fbd493b88fcd0905a8ec9b5f04909630a3361d6924178f7ab804e",
+  "files": {
+    "data/full-v1/corpus/papers.jsonl": {
+      "bytes": 1314875,
+      "sha256": "e360ee218d8cc14751343ec90bc49c32c90a43d352f7472378dd4c23311f1654"
+    },
+    "artifacts/bundled-cpu/pipaper-full-index-v1-d39945a58cfb8467/bm25.json": {
+      "bytes": 1560348,
+      "sha256": "f605b4580c9842b0216ae7be557195c2be3f52f20ea356c9eedd7e11af2a329b"
+    },
+    "artifacts/bundled-cpu/pipaper-full-index-v1-d39945a58cfb8467/chunks.jsonl": {
+      "bytes": 2293457,
+      "sha256": "51600aaf239e532d2a5b79e4248ad0f6400fce1b11d2e8e1256e8e632256219b"
+    },
+    "artifacts/bundled-cpu/pipaper-full-index-v1-d39945a58cfb8467/dense-vectors.npy": {
+      "bytes": 10035328,
+      "sha256": "e06ce4ccca5bbd367464b358c861025907e34517987e5f8887badf9cf4dad8a5"
+    },
+    "artifacts/bundled-cpu/pipaper-full-index-v1-d39945a58cfb8467/dense.index": {
+      "bytes": 10035245,
+      "sha256": "3eb0e5c83e2c3705770727f308c4cb81801b251ca12d27c6523bf6dfc3521b44"
+    },
+    "artifacts/bundled-cpu/pipaper-full-index-v1-d39945a58cfb8467/index-manifest.json": {
+      "bytes": 4052,
+      "sha256": "fafbdbb9f29bbe2c4a0e496a0583e130b8855f57decb49fb21974a35b2d41b18"
+    },
+    "artifacts/bundled-cpu/pipaper-full-index-v1-d39945a58cfb8467/source-map.jsonl": {
+      "bytes": 1031264,
+      "sha256": "5dbe465f7c5ae605688b5964c5a8c0f34f70458874776a92c1ee18ddcd01a9fa"
+    }
+  }
+}

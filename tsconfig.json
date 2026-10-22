@@ -4,5 +4,5 @@
     "strict": true, "noEmit": true, "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true, "skipLibCheck": true, "types": ["node"]
   },
-  "include": ["agent/**/*.ts", "tests/agent/**/*.ts", "scripts/*.ts"]
+  "include": ["agent/**/*.ts", "tests/agent/**/*.ts", "scripts/*.ts", "desktop/*.ts"]
 }

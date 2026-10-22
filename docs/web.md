@@ -13,6 +13,8 @@ npm run web
 
 ## 完整问答
 
+Windows 用户可以直接使用 [安装版](windows.md)，安装后填写自己的模型设置，启动本机网页问答。
+
 先按 [安装指南](environment.md) 准备论文库、模型和索引，再按 [配置指南](configuration.md) 填写 `configs/model.local.json`，并在终端设置自己的 `PIPAPER_API_KEY`。
 
 ```powershell

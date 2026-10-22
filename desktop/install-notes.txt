@@ -1,0 +1,19 @@
+AsterCite — Local research paper questions and answers
+
+This installer includes Node.js, Python, the CPU retrieval environment,
+and a starter paper library with its search index.
+
+On the first launch, AsterCite downloads approximately 4.6 GB of local
+retrieval models. Interrupted downloads can be continued by launching again.
+Allow at least 10 GB of free disk space. 16 GB RAM is recommended.
+
+Enter your own model service address, model name and API key to ask questions.
+The model service must support OpenAI-compatible Chat Completions,
+streaming and tool calls. API keys are kept in memory for the running session.
+
+The browser and backend run on this computer. Questions and retrieved
+paper excerpts are sent to your chosen model service.
+
+Close the service window to stop AsterCite. Conversation history, configuration
+and downloaded models stay in the installation folder and are kept on upgrade
+and uninstall. Paper upload is planned for a later version.
