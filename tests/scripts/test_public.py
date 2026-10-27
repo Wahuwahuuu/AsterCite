@@ -51,6 +51,12 @@ class PublicFiles(unittest.TestCase):
     def test_documentation_placeholders_are_allowed(self):
         self.assertEqual(self.scan("guide.md", "https://user:pass@example.invalid")["status"], "passed")
 
+    def test_vendor_path_is_not_a_personal_data_exemption(self):
+        result=self.scan("web/vendor/pdf.worker.mjs", "person" + "@" + "mail.example.org")
+        self.assertEqual(result["status"],"failed")
+        self.assertIn("modified_vendor_release",[entry["reason"] for entry in result["findings"]])
+        self.assertIn("personal_email",[entry["reason"] for entry in result["findings"]])
+
 
 if __name__ == "__main__":
     unittest.main()

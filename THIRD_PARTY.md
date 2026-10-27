@@ -18,3 +18,6 @@
 ## 参考资料
 
 - Dasigi, P., Lo, K., Beltagy, I., Cohan, A., Smith, N. A., & Gardner, M. (2021). [A Dataset of Information-Seeking Questions and Answers Anchored in Research Papers](https://aclanthology.org/2021.naacl-main.365/). NAACL-HLT.
+## PDF 阅读器
+
+网页使用 Mozilla PDF.js 6.4.299（Apache-2.0），浏览器发行文件来自锁定的 `pdfjs-dist` 包。许可证保存在 `web/vendor/pdfjs-LICENSE`。论文 PDF 从各篇论文的官方 arXiv 页面获取，权利归原作者；本项目的源码许可证不覆盖论文。

@@ -1,0 +1,7 @@
+{
+  "examples": [
+    {"title":"推文之外，还能用什么判断情感？","topic":"单篇阅读 · 方法与特征","paper_ids":["1611.09441"],"question":"《Sentiment Analysis for Twitter: Going Beyond Tweet Text》如何结合推文文本、外部链接与社交信息进行情感分析？请引用原文。"},
+    {"title":"语音情感模型如何利用未标注数据？","topic":"单篇阅读 · 表示学习","paper_ids":["1705.02394"],"question":"《Learning Representations of Emotional Speech with Deep Convolutional Generative Adversarial Networks》如何利用未标注数据学习语音表示？请结合原文说明方法。"},
+    {"title":"比较文本与语音的情感分析方法","topic":"跨论文比较 · 特征与训练方式","paper_ids":["1611.09441","1705.02394"],"question":"请用中文比较《Sentiment Analysis for Twitter: Going Beyond Tweet Text》和《Learning Representations of Emotional Speech with Deep Convolutional Generative Adversarial Networks》的输入特征与训练方式，分别引用两篇论文。"}
+  ]
+}

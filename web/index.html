@@ -15,16 +15,17 @@
   <main class="workspace">
     <aside class="sidebar" aria-label="论文与会话">
       <button id="new-chat" class="new-chat"><span aria-hidden="true">＋</span> 新建对话 <span class="keycap">N</span></button>
-      <div class="sidebar-section"><div class="section-label">论文库 <span id="paper-count"></span></div><label class="search-box"><span aria-hidden="true">⌕</span><input id="paper-search" type="search" placeholder="搜索论文名称" aria-label="搜索论文名称"></label><div id="paper-list" class="paper-list"></div></div>
+      <div class="sidebar-section"><div class="section-label">论文库 <span id="paper-count"></span></div><label class="search-box"><span aria-hidden="true">⌕</span><input id="paper-search" type="search" placeholder="搜索论文名称" aria-label="搜索论文名称"></label><p class="library-hint">点击标题阅读 PDF · 勾选限定问答范围</p><div id="paper-list" class="paper-list"></div></div>
       <div class="sidebar-section conversations"><div class="section-label">最近对话</div><div id="session-list"></div></div>
       <div class="sidebar-bottom"><span class="small-logo" aria-hidden="true">✳</span><div><strong>从问题，到原文</strong><span>让研究有据可循</span></div><a href="https://github.com/Wahuwahuuu/AsterCite/releases/latest" target="_blank" rel="noopener noreferrer">v1.1</a></div>
     </aside>
     <section class="conversation" aria-label="问答工作区">
-      <div class="conversation-top"><div><span class="live-dot" aria-hidden="true"></span><span id="conversation-title">开始一次有依据的讨论</span></div><div class="conversation-actions"><button id="memory-open" class="icon-text-button" title="查看会话记忆">记忆</button><button id="export-chat" class="icon-text-button" disabled>导出对话</button></div></div>
+      <div class="conversation-top"><div><span class="live-dot" aria-hidden="true"></span><span id="conversation-title">开始一次有依据的讨论</span></div><div class="conversation-actions"><button id="reader-open" class="icon-text-button">论文 / 引用</button><button id="suggestions-open" class="icon-text-button">推荐问题</button><button id="memory-open" class="icon-text-button" title="查看会话记忆">记忆</button><button id="export-chat" class="icon-text-button" disabled>导出对话</button></div></div>
+      <section id="agent-activity" class="agent-activity" aria-label="Agent 执行过程"></section>
       <div id="chat-scroll" class="chat-scroll">
         <section id="welcome" class="welcome">
-          <div class="welcome-symbol" aria-hidden="true">✳</div><p class="eyebrow">READ. ASK. TRACE.</p><h1>让每个回答，<br>都有<span>出处。</span></h1><p class="welcome-description">围绕论文提问，沿着证据追问。<br>方法、数据与结论，都可以回到原文。</p>
-          <div class="suggestion-heading">从一个问题开始 <span aria-hidden="true">↓</span></div><div id="example-list" class="example-list"></div>
+          <h1>让每个回答，<br>都有<span>出处。</span></h1><p class="welcome-description">选一篇论文，提出问题。<br>跟随 Agent 的执行过程，回到原始 PDF 核对答案。</p>
+          <div class="suggestion-heading">精选论文与问题</div><div id="example-list" class="example-list"></div>
           <div class="welcome-footnote"><span aria-hidden="true">↳</span> 回答中的引用可点开查看右侧原文</div>
         </section>
         <div id="messages" class="messages" aria-live="polite"></div>
@@ -35,14 +36,23 @@
         <p id="mode-note" class="mode-note">示例使用已保存的问答。部署后可自由提问。</p><div id="notice" role="status" class="notice" hidden></div>
       </div>
     </section>
-    <aside class="evidence-panel" aria-label="论文引用"><div class="evidence-heading"><span>原文依据</span><span id="source-count" class="count-badge">0</span></div><div class="evidence-subheading">点击回答中的引用，查看出处</div><div id="sources" class="sources"><div class="empty-evidence"><div aria-hidden="true">❞</div><h2>证据就在这里</h2><p>论文标题、章节和原文片段<br>会随回答一起出现。</p><span class="evidence-placeholder-line"></span><span class="evidence-placeholder-line short"></span></div></div><div class="evidence-footer">原文节选 · 保留论文出处</div></aside>
+    <aside class="evidence-panel" aria-label="论文阅读与引用">
+      <div class="evidence-heading"><div class="reader-tabs" role="tablist" aria-label="论文阅读方式"><button id="tab-pdf" role="tab" aria-selected="true" aria-controls="pdf-panel">原始 PDF</button><button id="tab-sources" role="tab" aria-selected="false" aria-controls="source-panel" tabindex="-1">原文依据 <span id="source-count" class="count-badge">0</span></button></div></div>
+      <section id="pdf-panel" class="pdf-panel" role="tabpanel" aria-labelledby="tab-pdf">
+        <label class="sr-only" for="pdf-paper">阅读的论文</label><select id="pdf-paper" class="pdf-paper"></select><h2 id="pdf-title" class="pdf-title">选择论文，阅读原文</h2>
+        <div class="pdf-toolbar"><button id="pdf-prev" aria-label="PDF 上一页" disabled>上一页</button><span id="pdf-page" aria-live="polite">—</span><button id="pdf-next" aria-label="PDF 下一页" disabled>下一页</button><label class="sr-only" for="pdf-zoom">PDF 缩放</label><select id="pdf-zoom" aria-label="PDF 缩放"><option value="1">适应宽度</option><option value="1.25">125%</option><option value="1.5">150%</option></select></div>
+        <div id="pdf-viewport" class="pdf-viewport"><p id="pdf-status" role="status">选择左侧论文，即可在这里阅读原始 PDF。</p><button id="pdf-retry" class="reader-retry" hidden>重新加载 PDF</button><canvas id="pdf-canvas" role="img" aria-label="论文原始 PDF" hidden></canvas></div>
+        <div class="pdf-footer"><span>arXiv 原始 PDF · v1</span><a id="pdf-original" target="_blank" rel="noopener noreferrer" hidden>打开官方原文</a></div>
+      </section>
+      <section id="source-panel" class="source-panel" role="tabpanel" aria-labelledby="tab-sources" hidden><p class="evidence-subheading">点击回答中的引用，查看出处</p><div id="sources" class="sources"></div><div class="evidence-footer">原文节选 · 保留论文出处</div></section>
+    </aside>
   </main>
-  <dialog id="setup-dialog" class="modal"><form method="dialog"><button class="modal-close" aria-label="关闭使用指南">×</button></form><p class="eyebrow">GET STARTED</p><h2>把工作台带到自己的电脑</h2><p>网页和 CLI 使用相同的检索与问答流程。模型由你配置。</p><div class="setup-tabs"><button id="guide-demo" class="selected">查看示例</button><button id="guide-live">完整问答</button></div><div id="demo-guide"><p>无需安装，选择示例问题即可查看多轮问答，点击引用阅读原文。</p><pre><code>git clone https://github.com/Wahuwahuuu/AsterCite.git
+  <dialog id="setup-dialog" class="modal"><form method="dialog"><button class="modal-close" aria-label="关闭使用指南">×</button></form><h2>把工作台带到自己的电脑</h2><p>网页和 CLI 使用相同的检索与问答流程。模型由你配置。</p><div class="setup-tabs"><button id="guide-demo" class="selected">查看示例</button><button id="guide-live">完整问答</button></div><div id="demo-guide"><p>无需安装，选择示例问题即可查看多轮问答，点击引用阅读原文。</p><pre><code>git clone https://github.com/Wahuwahuuu/AsterCite.git
 cd AsterCite
 npm ci --ignore-scripts
 npm run web</code></pre></div><div id="live-guide" hidden><p>下载 Windows 安装版，从开始菜单启动 AsterCite。首次准备后，填写自己的模型服务地址、模型名称和密钥，浏览器会自动打开。</p><p>安装包附带论文和完整运行环境，检索在本机进行。关闭服务窗口后，再次启动可继续已保存的会话。</p><p><a href="https://github.com/Wahuwahuuu/AsterCite/releases/latest" target="_blank" rel="noopener noreferrer">下载 Windows x64 安装版 ↗</a></p></div><div class="modal-links"><a href="https://github.com/Wahuwahuuu/AsterCite/blob/main/docs/web.md" target="_blank" rel="noopener noreferrer">网页部署指南 ↗</a><a href="https://github.com/Wahuwahuuu/AsterCite/blob/main/docs/windows.md" target="_blank" rel="noopener noreferrer">安装使用指南 ↗</a></div></dialog>
-  <dialog id="memory-dialog" class="modal"><form method="dialog"><button class="modal-close" aria-label="关闭会话记忆">×</button></form><p class="eyebrow">CONVERSATION MEMORY</p><h2>当前会话记忆</h2><div id="memory-content"></div></dialog>
-  <dialog id="access-dialog" class="modal"><p class="eyebrow">WORKSPACE ACCESS</p><h2>连接问答服务</h2><p>填写这个自部署网站的访问口令。</p><form id="access-form"><label for="access-token">访问口令</label><input id="access-token" type="password" autocomplete="off" required><button type="submit" class="primary-button">连接</button></form></dialog>
+  <dialog id="memory-dialog" class="modal"><form method="dialog"><button class="modal-close" aria-label="关闭会话记忆">×</button></form><h2>当前会话记忆</h2><div id="memory-content"></div></dialog>
+  <dialog id="access-dialog" class="modal"><h2>连接问答服务</h2><p>填写这个自部署网站的访问口令。</p><form id="access-form"><label for="access-token">访问口令</label><input id="access-token" type="password" autocomplete="off" required><button type="submit" class="primary-button">连接</button></form></dialog>
   <noscript>请启用 JavaScript 以查看论文问答和引用。项目源码：https://github.com/Wahuwahuuu/AsterCite</noscript>
 </body>
 </html>

@@ -1,10 +1,16 @@
 """Scan publishable source/data only; report file names and counts, never secret contents."""
 from __future__ import annotations
-import argparse,json,os,pathlib,re,subprocess
+import argparse,hashlib,json,os,pathlib,re,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 PRIVATE_PARTS={".local",".release-work",".env",".codex",".agents","node_modules",".venv",".cache","runs","artifacts","reproduce","experiments","evaluation","evaluations","benchmarks","research","reports","metrics"}
 PRIVATE_PREFIXES=("docs/specs/","docs/plans/","docs/internal/","data/evaluation-","tests/evaluation/","tests/reproduce/","tests/fixtures/")
 PRIVATE_FILES={"AGENTS.md","docs/results.md","data/source-assets.json","scripts/replay_main_reliability_v2.ts"}
+# Unmodified PDF.js includes public third-party attribution, not project-owner data.
+VENDOR_RELEASES={
+    "web/vendor/pdf.mjs":"dd13af821c9c3e1778653340d6539a1ba07bc56cba40073a4c727864cf0c232a",
+    "web/vendor/pdf.worker.mjs":"07ceb740d746e5d9012fcf9f27d5c7dea09f7d2f5e74f5c8109e5787551a2333",
+    "web/vendor/pdfjs-LICENSE":"0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+}
 def candidates(root):
     top=subprocess.run(["git","rev-parse","--show-toplevel"],cwd=root,capture_output=True,text=True)
     result=subprocess.run(["git","-c","core.quotepath=false","ls-files","--cached","--others","--exclude-standard","-z"],cwd=root,capture_output=True)
@@ -24,13 +30,15 @@ def audit(root=ROOT):
         if PRIVATE_PARTS.intersection(parts) or path in PRIVATE_FILES or path.startswith(PRIVATE_PREFIXES) or path.endswith((".local.json",".bundle",".log",".key",".pem")) or pathlib.PurePosixPath(path).name.startswith('.env') and path!='.env.example':
             findings.append({"file":path,"reason":"private_path"});continue
         data=(root/path).read_bytes()
+        trusted_vendor=path in VENDOR_RELEASES and hashlib.sha256(data).hexdigest()==VENDOR_RELEASES[path]
+        if path in VENDOR_RELEASES and not trusted_vendor:findings.append({"file":path,"reason":"modified_vendor_release"})
         if len(data)>90*1024*1024:findings.append({"file":path,"reason":"oversized_file"})
         try:text=data.decode("utf8")
         except UnicodeError:continue
         if any(p.search(text) for p in patterns) or secret and secret in text:findings.append({"file":path,"reason":"credential_pattern"})
         if personal_paths.search(text):findings.append({"file":path,"reason":"personal_absolute_path"})
         if conversation.search(text):findings.append({"file":path,"reason":"conversation_record"})
-        if any(not (m.group(1).lower().endswith((".invalid",".example",".test")) or m.group(1).lower() in {"example.com","example.org","example.net","users.noreply.github.com"}) for m in email.finditer(text)):
+        if not trusted_vendor and any(not (m.group(1).lower().endswith((".invalid",".example",".test")) or m.group(1).lower() in {"example.com","example.org","example.net","users.noreply.github.com"}) for m in email.finditer(text)):
             findings.append({"file":path,"reason":"personal_email"})
     cfg=json.loads((root/"configs/model.example.json").read_bytes())
     if cfg["model"]["base_url"] or cfg["model"]["model_id"]:findings.append({"file":"configs/model.example.json","reason":"model_template_not_blank"})

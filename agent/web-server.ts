@@ -7,10 +7,12 @@ import { PROJECT_ROOT, loadAssets, createWorker, fileHash } from "./assets.ts";
 import { readConfig, containedPath, sha } from "./config.ts";
 import { RuntimeFailure, type Paper, type Chunk } from "./contracts.ts";
 import { PaperWebSession, type WebSessionFactory, type WebSessionPort } from "./web-session.ts";
+import { PaperPdfCache, originalPdfUrl } from "./paper-pdf.ts";
 
 export interface WebServerOptions {
   root:string; mode:"demo"|"live"; factory?:WebSessionFactory; papers?:readonly Paper[];
   modelLabel?:string; accessToken?:string; publicOrigin?:string; maxSessions?:number;
+  pdfFetch?:typeof fetch;
 }
 const STATIC_FILES:Record<string,{file:string;type:string}>={
   "/":{file:"index.html",type:"text/html; charset=utf-8"},
@@ -21,6 +23,11 @@ const STATIC_FILES:Record<string,{file:string;type:string}>={
   "/favicon.svg":{file:"favicon.svg",type:"image/svg+xml"},
   "/sample.json":{file:"sample.json",type:"application/json; charset=utf-8"},
   "/config.json":{file:"config.json",type:"application/json; charset=utf-8"}
+  ,"/paper-reader.js":{file:"paper-reader.js",type:"text/javascript; charset=utf-8"}
+  ,"/activity.js":{file:"activity.js",type:"text/javascript; charset=utf-8"}
+  ,"/showcase.json":{file:"showcase.json",type:"application/json; charset=utf-8"}
+  ,"/vendor/pdf.mjs":{file:"vendor/pdf.mjs",type:"text/javascript; charset=utf-8"}
+  ,"/vendor/pdf.worker.mjs":{file:"vendor/pdf.worker.mjs",type:"text/javascript; charset=utf-8"}
 };
 const safeEqual=(a:string,b:string)=>timingSafeEqual(Buffer.from(sha(a),"hex"),Buffer.from(sha(b),"hex"));
 function failure(code:string):{status:number;message:string}{
@@ -33,12 +40,13 @@ function failure(code:string):{status:number;message:string}{
     TOO_LARGE:{status:413,message:"输入内容过长。"},DEMO_ONLY:{status:409,message:"这里提供示例回放，完整问答请自行部署。"},
     INVALID_SESSION:{status:409,message:"会话文件无法读取，请新建会话。"},INVALID_BUDGET:{status:409,message:"会话配置已经变化，请新建会话。"},
     INVALID_SNAPSHOT:{status:409,message:"会话配置已经变化，请新建会话。"}
+    ,PDF_UNAVAILABLE:{status:502,message:"PDF 暂时无法加载，请重试或打开官方原文。"}
   };
   return known[code]??{status:502,message:"问答未完成，请检查模型服务或稍后重试。"};
 }
 function headers(res:ServerResponse){
   res.setHeader("X-Content-Type-Options","nosniff");res.setHeader("Referrer-Policy","no-referrer");
-  res.setHeader("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  res.setHeader("Content-Security-Policy","default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   res.setHeader("Cache-Control","no-store");
 }
 function json(res:ServerResponse,status:number,value:unknown){res.writeHead(status,{"Content-Type":"application/json; charset=utf-8"});res.end(JSON.stringify(value));}
@@ -54,6 +62,9 @@ function only(v:Record<string,unknown>,keys:string[]){if(Object.keys(v).some(k=>
 export async function createWebServer(options:WebServerOptions){
   const sessionPath=await containedPath(options.root,".local/web/sessions");
   if(options.mode==="live")await mkdir(sessionPath,{recursive:true});
+  let papers=options.papers;
+  if(!papers)try{papers=JSON.parse(await readFile(join(options.root,"web/config.json"),"utf8")).papers;}catch{papers=[];}
+  const pdfs=new PaperPdfCache(options.root,new Set((papers??[]).map(p=>p.paper_id)),options.pdfFetch);
   let processing=false,creating=false;
   const server=createServer(async(req,res)=>{
     headers(res);
@@ -67,15 +78,20 @@ export async function createWebServer(options:WebServerOptions){
       if(method==="GET"&&url.pathname==="/healthz"){json(res,200,{status:"ok",mode:options.mode});return;}
       if(method==="GET"&&url.pathname==="/api/config"){
         json(res,200,{mode:options.mode,model:options.modelLabel??null,access_token_required:!!options.accessToken,
-          papers:options.papers?.map(p=>({paper_id:p.paper_id,title:p.title}))??[]});return;
+          papers:papers?.map(p=>({paper_id:p.paper_id,title:p.title,pdf_url:originalPdfUrl(p.paper_id)}))??[]});return;
       }
       if(method==="GET"&&STATIC_FILES[url.pathname]){
         const asset=STATIC_FILES[url.pathname],bytes=await readFile(await containedPath(options.root,"web/"+asset.file));
         res.writeHead(200,{"Content-Type":asset.type});res.end(bytes);return;
       }
       if(!url.pathname.startsWith("/api/"))throw new RuntimeFailure("NOT_FOUND","No route");
-      if(options.mode!=="live"||!options.factory)throw new RuntimeFailure("DEMO_ONLY","Replay only");
       if(options.accessToken&&!safeEqual(String(req.headers.authorization??""),"Bearer "+options.accessToken))throw new RuntimeFailure("UNAUTHORIZED","Missing access token");
+      const pdfMatch=/^\/api\/papers\/(\d{4}\.\d{4,5})\/pdf$/u.exec(url.pathname);
+      if(method==="GET"&&pdfMatch){
+        try{const bytes=await pdfs.get(pdfMatch[1]);res.writeHead(200,{"Content-Type":"application/pdf","Content-Length":bytes.length,"Content-Disposition":`inline; filename="${pdfMatch[1]}v1.pdf"`});res.end(bytes);return;}
+        catch(e){if(e instanceof RuntimeFailure&&e.code==="NOT_FOUND")throw e;throw new RuntimeFailure("PDF_UNAVAILABLE","PDF unavailable");}
+      }
+      if(options.mode!=="live"||!options.factory)throw new RuntimeFailure("DEMO_ONLY","Replay only");
       if(method!=="GET"){
         const origin=options.publicOrigin??"http://"+host;
         if(req.headers.origin!==origin||req.headers["x-astercite-request"]!=="1")throw new RuntimeFailure("INVALID_ORIGIN","Origin required");
@@ -90,7 +106,7 @@ export async function createWebServer(options:WebServerOptions){
           json(res,201,{id,token});return;
         }finally{creating=false;}
       }
-      const match=/^\/api\/sessions\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/(question|settings))?$/u.exec(url.pathname);
+      const match=/^\/api\/sessions\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/(question(?:\/stream)?|settings))?$/u.exec(url.pathname);
       if(!match)throw new RuntimeFailure("NOT_FOUND","No session route");
       const dir=await containedPath(options.root,".local/web/sessions/"+match[1]);
       let owner:{token_digest:string};try{owner=JSON.parse(await readFile(await containedPath(dir,"owner.json"),"utf8"));}catch{throw new RuntimeFailure("NOT_FOUND","Missing session");}
@@ -99,7 +115,7 @@ export async function createWebServer(options:WebServerOptions){
       if(processing)throw new RuntimeFailure("SESSION_LOCKED","A question is running");
       let action:"view"|"ask"|"settings";
       if(method==="GET"&&!match[2])action="view";
-      else if(method==="POST"&&match[2]==="question")action="ask";
+      else if(method==="POST"&&match[2]?.startsWith("question"))action="ask";
       else if(method==="POST"&&match[2]==="settings")action="settings";
       else throw new RuntimeFailure("NOT_FOUND","Unsupported method");
       let input:Record<string,unknown>={};
@@ -112,16 +128,24 @@ export async function createWebServer(options:WebServerOptions){
       // One inference at a time shares one retrieval worker without loading weights per visitor.
       if(processing)throw new RuntimeFailure("SESSION_LOCKED","A question is running");processing=true;
       let session:WebSessionPort|undefined;
+      let heartbeat:ReturnType<typeof setInterval>|undefined;
       try{
         // Resolve all existing private subpaths too, before the adapter can open them.
         for(const sub of ["ledger","turns","checkpoints","session.lock"])await containedPath(dir,sub);
         session=await options.factory(dir);
+        if(action==="ask"&&match[2]==="question/stream"){
+          res.writeHead(200,{"Content-Type":"application/x-ndjson; charset=utf-8","X-Accel-Buffering":"no"});res.setTimeout(0);
+          const send=(value:unknown)=>{if(!res.destroyed&&!res.writableEnded)res.write(JSON.stringify(value)+"\n");};
+          send({type:"ready"});heartbeat=setInterval(()=>send({type:"heartbeat"}),10000);heartbeat.unref();
+          const value=await session.ask(input.question as string,event=>send({type:"activity",event}));
+          send({type:"result",view:value});res.end();return;
+        }
         const value=action==="ask"?await session.ask(input.question as string):action==="settings"?await session.configure(input.scope as string[],input.compact as boolean):await session.view();
         json(res,200,value);
-      }finally{try{await session?.close();}finally{processing=false;}}
+      }finally{if(heartbeat)clearInterval(heartbeat);try{await session?.close();}finally{processing=false;}}
     }catch(e){
       const code=e instanceof RuntimeFailure?e.code:(e as NodeJS.ErrnoException).code==="ENOENT"?"NOT_FOUND":"RUNTIME_ERROR";
-      const f=failure(code);if(!res.headersSent)json(res,f.status,{error:f.message,code});else res.end();
+      const f=failure(code);if(!res.headersSent)json(res,f.status,{error:f.message,code});else if(!res.destroyed)res.end(JSON.stringify({type:"error",error:f.message,code})+"\n");
     }
   });
   server.requestTimeout=30000;server.headersTimeout=15000;

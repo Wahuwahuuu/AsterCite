@@ -1,10 +1,22 @@
 import {parseEvidenceText,evidencePreview} from './evidence-format.js';
+import {ActivityPanel,readQuestionStream} from './activity.js';
+import {PaperReader} from './paper-reader.js';
 
 const $=id=>document.getElementById(id);
 const make=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 const state={mode:'demo',papers:[],sample:null,turns:[],scope:[],pending_compaction:false,memory:null,budget:null,busy:false,active:null,accessToken:'',demoIndex:-1,sessions:[],sourceTurn:-1};
 const STORAGE='astercite.web.sessions.v1';
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const activity=new ActivityPanel($('agent-activity'));
+const reader=new PaperReader({canvas:$('pdf-canvas'),status:$('pdf-status'),page:$('pdf-page'),previous:$('pdf-prev'),next:$('pdf-next'),zoom:$('pdf-zoom'),original:$('pdf-original'),retry:$('pdf-retry'),container:$('pdf-viewport')});
+let readingPaper=null,showcase=[];
+function readerTab(name){for(const value of ['pdf','sources']){const selected=name===value;const tab=$('tab-'+value);tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;$(value==='pdf'?'pdf-panel':'source-panel').hidden=!selected;}if(name==='pdf'&&readingPaper)void reader.open(readingPaper,state.accessToken);}
+function openPdf(id){const paper=state.papers.find(p=>p.paper_id===id);if(!paper)return;readingPaper=paper;$('pdf-paper').value=id;$('pdf-title').textContent=paper.title;readerTab('pdf');openEvidence();}
+for(const name of ['pdf','sources'])$('tab-'+name).addEventListener('click',()=>readerTab(name));
+document.querySelector('.reader-tabs').addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();const name=$('tab-pdf').getAttribute('aria-selected')==='true'?'sources':'pdf';readerTab(name);$('tab-'+name).focus();}});
+$('pdf-paper').addEventListener('change',()=>openPdf($('pdf-paper').value));
+$('reader-open').addEventListener('click',openEvidence);
+$('suggestions-open').addEventListener('click',()=>{$('welcome').hidden=false;$('chat-scroll').scrollTop=0;});
 try{state.sessions=JSON.parse(localStorage.getItem(STORAGE)||'[]').filter(s=>UUID.test(s.id)&&/^[a-f0-9]{64}$/.test(s.token)&&typeof s.label==='string').slice(0,100);}catch{state.sessions=[];}
 function persist(){try{localStorage.setItem(STORAGE,JSON.stringify(state.sessions));}catch{notice('浏览器没有允许保存会话列表；当前对话仍可继续。');}}
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);$('notice').hidden=false;}
@@ -24,11 +36,11 @@ function busy(value){
   state.busy=value;$('busy-indicator').hidden=!value;
   for(const id of ['send','new-chat','compact','scope-all','question'])$(id).disabled=value;
   $('compact').disabled=value||state.mode!=='live';
-  document.querySelectorAll('.paper-item,.session-item,.example-card').forEach(n=>n.disabled=value);
+  document.querySelectorAll('.paper-scope,.session-item,.example-card').forEach(n=>n.disabled=value);
   $('send-label').textContent=value?'处理中':state.mode==='demo'?'播放下一问':'发送问题';
   if(value)$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
 }
-function applyView(view){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.budget=view.budget;render();}
+function applyView(view){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.budget=view.budget;render();activity.reset({items:state.turns.at(-1)?.activity??[],outcome:state.turns.at(-1)?.status});}
 async function ensureSession(){
   if(state.active)return;
   const value=await api('/api/sessions',{});state.active={...value,label:'新对话'};
@@ -36,19 +48,15 @@ async function ensureSession(){
 }
 function renderPapers(){
   const list=$('paper-list');list.replaceChildren();const term=$('paper-search').value.toLowerCase();
-  const papers=state.papers.filter(p=>(p.title+' '+p.paper_id).toLowerCase().includes(term));
+  const featured=new Set(showcase.flatMap(e=>e.paper_ids));
+  const papers=state.papers.filter(p=>(p.title+' '+p.paper_id).toLowerCase().includes(term)).sort((a,b)=>Number(featured.has(b.paper_id))-Number(featured.has(a.paper_id)));
   $('paper-count').textContent=state.papers.length+' 篇';
   for(const p of papers){
-    const b=make('button','paper-item'+(state.scope.includes(p.paper_id)?' selected':''));b.disabled=state.busy;b.title=p.title;
-    b.append(make('span','paper-icon','▤'));const details=make('div');details.append(make('div','paper-title',p.title),make('div','paper-id',p.paper_id));b.append(details);
-    b.addEventListener('click',async()=>{
-      if(state.mode==='demo'){
-        state.scope=[p.paper_id];renderPapers();renderScope();
-        const t=state.sample.turns.find(t=>t.sources.some(s=>s.paper_id===p.paper_id));
-        showSources(t.sources.filter(s=>s.paper_id===p.paper_id));return;
-      }
-      await settings(state.scope.includes(p.paper_id)?state.scope.filter(id=>id!==p.paper_id):[...state.scope,p.paper_id],state.pending_compaction);
-    });list.append(b);
+    const row=make('div','paper-row'+(state.scope.includes(p.paper_id)?' selected':''));
+    const scope=make('button','paper-scope',state.scope.includes(p.paper_id)?'✓':'');scope.setAttribute('aria-label','问答范围：'+p.title);scope.setAttribute('aria-pressed',String(state.scope.includes(p.paper_id)));scope.disabled=state.busy;
+    scope.addEventListener('click',async()=>{const range=state.scope.includes(p.paper_id)?state.scope.filter(id=>id!==p.paper_id):[...state.scope,p.paper_id];if(state.mode==='demo'){state.scope=range;renderPapers();renderScope();}else await settings(range,state.pending_compaction);});
+    const b=make('button','paper-item');b.title='阅读 PDF：'+p.title;b.setAttribute('aria-label',b.title);
+    const details=make('div');details.append(make('div','paper-title',p.title),make('div','paper-id',p.paper_id+(featured.has(p.paper_id)?' · 推荐':'')));b.append(details);b.addEventListener('click',()=>openPdf(p.paper_id));row.append(scope,b);list.append(row);
   }
   if(!papers.length)list.append(make('p','sidebar-empty','没有匹配的论文'));
 }
@@ -60,7 +68,7 @@ function renderSessions(){
   for(const item of state.sessions){
     const b=make('button','session-item'+(state.active?.id===item.id?' selected':''));b.disabled=state.busy;
     b.append(make('span',null,'◷'),make('span',null,item.label));b.title=item.label;
-    b.addEventListener('click',async()=>{clearNotice();busy(true);state.active=item;try{applyView(await api('/api/sessions/'+item.id));notice('已恢复这个会话。');}catch(e){notice(e.message,true);}finally{busy(false);}});list.append(b);
+    b.addEventListener('click',async()=>{clearNotice();busy(true);state.active=item;try{applyView(await api('/api/sessions/'+item.id));notice('已恢复这个会话。');}catch(e){state.active=null;renderSessions();notice(e.message,true);}finally{busy(false);}});list.append(b);
   }
   if(!state.sessions.length)list.append(make('p','sidebar-empty','你的对话会保存在这里。'));
 }
@@ -78,7 +86,7 @@ function inlineText(target,text,sources){
     const index=sources.findIndex(s=>s.chunk_id===match[1]);
     if(index<0){target.append(document.createTextNode('[引用不可用]'));continue;}
     const b=make('button','citation',String(index+1));b.setAttribute('aria-label','查看引用 '+(index+1));
-    b.addEventListener('click',()=>{showSources(sources,index);openEvidence();});target.append(b);
+    b.addEventListener('click',()=>{showSources(sources,index);readerTab('sources');openEvidence();});target.append(b);
   }
   target.append(document.createTextNode(text.slice(position)));
 }
@@ -108,19 +116,20 @@ function showSources(sources,active=-1){
       const details=make('details','source-details'),summary=make('summary',null,'展开完整片段');details.append(summary,sourceContent(blocks));
       details.addEventListener('toggle',()=>{excerpt.hidden=details.open;summary.textContent=details.open?'收起完整片段':'展开完整片段';});card.append(details);
     }
-    if(/^\d{4}\.\d{4,5}$/.test(source.paper_id)){const link=make('a','source-link','阅读论文 ↗');link.href='https://arxiv.org/abs/'+source.paper_id;link.target='_blank';link.rel='noopener noreferrer';card.append(link);}
+    if(/^\d{4}\.\d{4,5}$/.test(source.paper_id)){const link=make('button','source-link','查看这篇论文的 PDF');link.addEventListener('click',()=>openPdf(source.paper_id));card.append(link);}
     box.append(card);
   }
   if(active>=0)$('source-'+active)?.scrollIntoView({block:'nearest',behavior:'smooth'});
 }
-function openEvidence(){if(window.innerWidth<=950)document.querySelector('.evidence-panel').classList.add('mobile-open');}
+function openEvidence(){if(window.innerWidth<=950){document.querySelector('.sidebar').classList.remove('mobile-open');document.querySelector('.evidence-panel').classList.add('mobile-open');}}
 function renderMessages(){
   const box=$('messages');box.replaceChildren();$('welcome').hidden=state.turns.length>0;
   for(const [index,turn] of state.turns.entries()){
     const user=make('article','message user'),head=make('div','message-heading');head.append(make('span','avatar','↗'),make('span',null,'你'));user.append(head,make('div','message-text',turn.question));box.append(user);
     const assistant=make('article','message assistant'),heading=make('div','message-heading');heading.append(make('span','avatar','✳'),make('span',null,'AsterCite'));assistant.append(heading);
     const text=make('div','message-text');for(const paragraph of turn.answer.split(/\n\n+/)){const p=make('p','answer-paragraph');inlineText(p,paragraph,turn.sources);text.append(p);}assistant.append(text);
-    const foot=make('div','answer-footer');const sources=make('button',null,turn.sources.length+' 处原文引用');sources.addEventListener('click',()=>{state.sourceTurn=index;showSources(turn.sources);openEvidence();});foot.append(sources);
+    const foot=make('div','answer-footer');const sources=make('button',null,turn.sources.length+' 处原文引用');sources.addEventListener('click',()=>{state.sourceTurn=index;showSources(turn.sources);readerTab('sources');openEvidence();});foot.append(sources);
+    if(turn.activity?.length){const process=make('button',null,'查看执行过程');process.addEventListener('click',()=>{activity.reset({items:turn.activity,outcome:turn.status});$('agent-activity').scrollIntoView({block:'nearest'});});foot.append(process);}
     if(state.mode==='live')foot.append(make('span',null,'· '+Math.round(turn.elapsed_ms/1000)+' 秒'),make('span',null,'· '+(turn.tokens===null?'token 未报告':turn.tokens+' token')));
     else foot.append(make('span',null,'· 示例回放'));
     if(turn.status!=='completed')foot.append(make('span','answer-status','本轮未完成'));
@@ -140,9 +149,10 @@ function render(){renderPapers();renderSessions();renderScope();renderMessages()
 }
 function playDemo(index){
   if(state.busy)return;clearNotice();state.demoIndex=index;state.turns=state.sample.turns.slice(0,index+1);state.scope=[];render();
+  activity.reset({replay:true});readerTab('sources');
   if(index===state.sample.turns.length-1)notice('多轮示例已播放完毕。完整问答可按使用指南部署。');
 }
-function openSidebar(){document.querySelector('.sidebar').classList.add('mobile-open');}
+function openSidebar(){document.querySelector('.evidence-panel').classList.remove('mobile-open');document.querySelector('.sidebar').classList.add('mobile-open');}
 async function settings(scope,compact){
   clearNotice();busy(true);try{await ensureSession();applyView(await api('/api/sessions/'+state.active.id+'/settings',{scope,compact}));if(compact)notice('下一次提问时执行压缩，计入该轮用量。');}
   catch(e){notice(e.message,true);}finally{busy(false);}
@@ -153,18 +163,24 @@ async function sendQuestion(){
   const question=$('question').value.trim();if(!question)return;
   if(Array.from(question).length>12000){notice('问题最多 12000 字。',true);return;}
   clearNotice();busy(true);
+  activity.reset({running:true});
   try{
-    await ensureSession();const view=await api('/api/sessions/'+state.active.id+'/question',{question});applyView(view);$('question').value='';
+    await ensureSession();
+    const pending=make('article','message user pending-question');pending.append(make('div','message-heading','你'),make('div','message-text',question));$('messages').append(pending);$('welcome').hidden=true;$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
+    const headers={'Content-Type':'application/json','X-AsterCite-Request':'1','X-AsterCite-Session':state.active.token};if(state.accessToken)headers.Authorization='Bearer '+state.accessToken;
+    const response=await fetch('/api/sessions/'+state.active.id+'/question/stream',{method:'POST',headers,body:JSON.stringify({question})});
+    if(response.status===401)$('access-dialog').showModal();
+    const view=await readQuestionStream(response,event=>activity.update(event));applyView(view);activity.finish(state.turns.at(-1)?.status==='completed');$('question').value='';
     state.active.label=state.turns[0]?.question.slice(0,32)||'新对话';persist();renderSessions();
     if(state.turns.at(-1)?.status!=='completed')notice('本轮未完成，请检查模型服务。已发生的请求计入会话用量。',true);
-  }catch(e){notice(e.message,true);}finally{busy(false);}
+  }catch(e){activity.finish(false);document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{busy(false);}
 }
 $('question-form').addEventListener('submit',e=>{e.preventDefault();void sendQuestion();});
 $('question').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();void sendQuestion();}});
 $('paper-search').addEventListener('input',renderPapers);
 $('scope-all').addEventListener('click',()=>{if(state.mode==='demo'){state.scope=[];renderScope();renderPapers();}else void settings([],state.pending_compaction);});
 $('compact').addEventListener('click',()=>void settings(state.scope,!state.pending_compaction));
-$('new-chat').addEventListener('click',()=>{if(state.busy)return;state.active=null;state.turns=[];state.scope=[];state.memory=null;state.budget=null;state.pending_compaction=false;state.demoIndex=-1;clearNotice();render();busy(false);if(state.mode==='live'){$('question').value='';$('question').focus();}});
+$('new-chat').addEventListener('click',()=>{if(state.busy)return;state.active=null;state.turns=[];state.scope=[];state.memory=null;state.budget=null;state.pending_compaction=false;state.demoIndex=-1;clearNotice();render();activity.reset({replay:state.mode==='demo'});busy(false);if(state.mode==='live'){$('question').value='';$('question').focus();}});
 document.addEventListener('keydown',e=>{if(e.key==='n'&&!e.ctrlKey&&!e.metaKey&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&!document.querySelector('dialog[open]'))$('new-chat').click();if(e.key==='Escape'){document.querySelector('.evidence-panel').classList.remove('mobile-open');document.querySelector('.sidebar').classList.remove('mobile-open');}});
 $('setup-open').addEventListener('click',()=>$('setup-dialog').showModal());
 for(const [button,panel] of [['guide-demo','demo-guide'],['guide-live','live-guide']])$(button).addEventListener('click',()=>{for(const id of ['guide-demo','guide-live'])$(id).classList.toggle('selected',id===button);for(const id of ['demo-guide','live-guide'])$(id).hidden=id!==panel;});
@@ -174,9 +190,9 @@ $('memory-open').addEventListener('click',()=>{
   else{const rows=[['当前论文',state.memory?.paper_id||'尚未确定'],['对比论文',state.memory?.comparison.join('、')||'无'],['比较维度',state.memory?.dimensions.join('、')||'无'],['回答偏好',state.memory?.preferences.map(p=>p.key+'：'+p.value).join('；')||'无'],['上下文压缩',state.pending_compaction?'下一问执行':'按会话配置执行']];for(const [key,value] of rows){const row=make('div','memory-row');row.append(make('span',null,key),make('span',null,value));content.append(row);}}
   $('memory-dialog').showModal();
 });
-$('access-form').addEventListener('submit',e=>{e.preventDefault();state.accessToken=$('access-token').value;$('access-token').value='';$('access-dialog').close();notice('已设置访问口令，可以开始问答。');});
+$('access-form').addEventListener('submit',e=>{e.preventDefault();state.accessToken=$('access-token').value;$('access-token').value='';$('access-dialog').close();if(readingPaper)void reader.open(readingPaper,state.accessToken,true);notice('已设置访问口令，可以开始问答。');});
 $('export-chat').addEventListener('click',()=>{const blob=new Blob([JSON.stringify({application:'AsterCite',turns:state.turns},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),a=make('a');a.href=url;a.download='astercite-conversation.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-const closeEvidence=make('button','icon-text-button','关闭');closeEvidence.setAttribute('aria-label','关闭原文依据');closeEvidence.addEventListener('click',()=>document.querySelector('.evidence-panel').classList.remove('mobile-open'));document.querySelector('.evidence-heading').append(closeEvidence);
+const closeEvidence=make('button','icon-text-button','关闭');closeEvidence.setAttribute('aria-label','关闭论文阅读');closeEvidence.addEventListener('click',()=>document.querySelector('.evidence-panel').classList.remove('mobile-open'));document.querySelector('.evidence-heading').append(closeEvidence);
 closeEvidence.classList.add('source-jump');
 const paperMenu=make('button','icon-text-button paper-menu','论文 / 会话');paperMenu.addEventListener('click',openSidebar);document.querySelector('.conversation-actions').prepend(paperMenu);
 const closeSidebar=make('button','icon-text-button close-sidebar','关闭');closeSidebar.addEventListener('click',()=>document.querySelector('.sidebar').classList.remove('mobile-open'));document.querySelector('.sidebar').prepend(closeSidebar);
@@ -189,16 +205,22 @@ async function init(){
     $('mode-note').textContent=state.mode==='demo'?'示例使用已保存的问答。部署后可自由提问。':'模型：'+config.model+' · 会话保存在当前问答服务';
     $('question').readOnly=state.mode==='demo';$('compact').disabled=state.mode!=='live';
     $('input-hint').textContent=state.mode==='demo'?'查看完整的多轮对话':'Enter 发送 · Shift + Enter 换行';
+    const select=$('pdf-paper');for(const p of state.papers){const option=make('option',null,p.title);option.value=p.paper_id;select.append(option);}
     const examples=$('example-list');
-    for(const index of [0,1,3]){
-      const turn=state.sample.turns[index],b=make('button','example-card');b.append(make('span','example-number',String(index===3?3:index+1).padStart(2,'0')));
+    if(state.mode==='live'){
+      showcase=(await readJSON('/showcase.json')).examples.filter(e=>e.paper_ids.every(id=>state.papers.some(p=>p.paper_id===id)));
+      for(const example of showcase){const b=make('button','example-card'),copy=make('span');copy.append(make('span','example-topic',example.topic),make('span','example-title',example.title),make('span','example-paper',example.paper_ids.map(id=>state.papers.find(p=>p.paper_id===id).title).join(' + ')));b.append(copy,make('span','example-arrow','→'));
+        b.addEventListener('click',async()=>{if(state.busy)return;await settings(example.paper_ids,state.pending_compaction);if(!example.paper_ids.every(id=>state.scope.includes(id)))return;$('question').value=example.question;openPdf(example.paper_ids[0]);$('question').focus();notice('已选择对应论文，点击“发送问题”开始。');});examples.append(b);}
+    }else for(const index of [0,1,3]){
+      const turn=state.sample.turns[index],b=make('button','example-card');
       const copy=make('span');copy.append(make('span','example-title',turn.label),make('span','example-topic',turn.topic));b.append(copy,make('span','example-arrow','↗'));
       b.addEventListener('click',()=>{if(state.mode==='demo')playDemo(index);else{$('question').value=turn.question;$('question').focus();}});examples.append(b);
     }
-    render();busy(false);
+    render();busy(false);activity.reset({replay:state.mode==='demo'});
+    const first=state.papers.find(p=>p.paper_id==='1611.09441')??state.papers[0];if(first){readingPaper=first;$('pdf-paper').value=first.paper_id;$('pdf-title').textContent=first.title;if(!config.access_token_required)readerTab('pdf');}
     if(state.mode==='live'){
       if(config.access_token_required)$('access-dialog').showModal();
-      else if(state.sessions.length){state.active=state.sessions[0];try{applyView(await api('/api/sessions/'+state.active.id));}catch(e){notice(e.message,true);}}
+      else if(state.sessions.length){state.active=state.sessions[0];try{applyView(await api('/api/sessions/'+state.active.id));}catch(e){state.active=null;renderSessions();notice(e.message,true);}}
     }
   }catch{notice('页面资料未能加载，请刷新重试。',true);$('send').disabled=true;}
 }

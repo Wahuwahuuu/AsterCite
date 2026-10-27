@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fauxAssistantMessage as reply } from "@earendil-works/pi-ai";
 import { createWebServer, parseWebArgs, type WebServerOptions } from "../../agent/web-server.ts";
-import { PaperWebSession, type WebSessionPort, type WebView } from "../../agent/web-session.ts";
+import { PaperWebSession, type WebSessionPort, type WebView, type WebActivity } from "../../agent/web-session.ts";
 import { parseConfig, sha } from "../../agent/config.ts";
 import { RuntimeFailure } from "../../agent/contracts.ts";
 import type { Assets } from "../../agent/assets.ts";
@@ -26,6 +26,35 @@ test("website defaults to demo on loopback and validates launch arguments",()=>{
   assert.deepEqual(parseWebArgs([]),{live:false,host:"127.0.0.1",port:4173,config:"configs/model.local.json",help:false});
   assert.equal(parseWebArgs(["--live","--port","4500"]).live,true);
   for(const args of [["--port","NaN"],["--port","0"],["--host","example.com"],["--unknown"],["--config"]])assert.throws(()=>parseWebArgs(args));
+});
+
+test("question stream delivers actual activities before the answer and retains owner/origin/concurrency gates",async()=>{
+  let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});let calls=0;
+  const f=await fixture({factory:async()=>({async view(){return structuredClone(empty);},async configure(){return structuredClone(empty);},async close(){},async ask(question,onProgress){
+    calls++;onProgress?.({id:"tool-1",kind:"tool",tool:"retrieve_chunks",status:"running",label:"检索原文",detail:"test query",elapsed_ms:1});
+    await gate;onProgress?.({id:"tool-1",kind:"tool",tool:"retrieve_chunks",status:"completed",label:"检索原文",detail:"返回 1 段原文",elapsed_ms:2});
+    return {...structuredClone(empty),turns:[{question,answer:"finished",sources:[],status:"completed",elapsed_ms:2,requests:1,tokens:null,stages:[]}]};
+  }})});
+  try{
+    const owner=await (await f.post("/api/sessions",{})).json(),path="/api/sessions/"+owner.id+"/question/stream",headers={"X-AsterCite-Session":owner.token};
+    assert.equal((await f.post(path,{question:"fact"})).status,403);
+    assert.equal((await f.post(path,{question:"fact"},{...headers,Origin:"https://different.invalid"})).status,403);
+    const response=await f.post(path,{question:"fact"},headers);assert.match(response.headers.get("content-type")??"",/x-ndjson/);
+    const reader=response.body!.getReader(),first=await reader.read();const beginning=new TextDecoder().decode(first.value);assert.match(beginning,/activity/);assert.ok(!beginning.includes('"result"'));
+    assert.equal((await f.post(path,{question:"second"},headers)).status,409);assert.equal(calls,1);
+    release();let text=beginning;while(true){const item=await reader.read();if(item.done)break;text+=new TextDecoder().decode(item.value);}
+    const lines=text.trim().split("\n").map(line=>JSON.parse(line));assert.equal(lines.at(-1).type,"result");assert.equal(lines.at(-1).view.turns[0].answer,"finished");assert.equal(lines.filter(l=>l.type==="activity").length,2);
+  }finally{release();await f.close();}
+});
+
+test("PDF HTTP route is restricted to catalog papers and the website access token",async()=>{
+  const bytes=Buffer.from("%PDF-1.4\noriginal\n%%EOF"),f=await fixture({papers:[{paper_id:"1611.09441",title:"Twitter",abstract:""}],accessToken:"owner-website-token",pdfFetch:(async()=>new Response(bytes)) as typeof fetch});
+  try{
+    assert.equal((await fetch(f.origin+"/api/papers/1611.09441/pdf")).status,401);
+    const headers={Authorization:"Bearer owner-website-token"};assert.equal((await fetch(f.origin+"/api/papers/1705.02394/pdf",{headers})).status,404);
+    const pdf=await fetch(f.origin+"/api/papers/1611.09441/pdf",{headers});assert.equal(pdf.status,200);assert.equal(pdf.headers.get("content-type"),"application/pdf");assert.deepEqual(Buffer.from(await pdf.arrayBuffer()),bytes);
+    assert.ok(!(await (await fetch(f.origin+"/api/config")).text()).includes("owner-website-token"));
+  }finally{await f.close();}
 });
 test("HTTP isolates browser sessions, requires same-origin changes, rejects credentials and private paths",async()=>{
   const f=await fixture();
@@ -80,17 +109,25 @@ test("website adapter runs the existing Harness, saves citations and restores me
   const options={directory:root,assets,config,worker:{async request(){return {backend:"rrf_rerank",index_version:PREPARED_INDEX,chunks:[seed.chunks[0]]};}},sources,key,
     createHarness:async(params:Parameters<typeof import("../../agent/session-main-v2.ts").MainPaperHarness.create>[0])=>{
       const {modelRuntime,model,...extra}=params;
-      return (await mainFixture([reply(JSON.stringify(preparation)),reply(JSON.stringify(final))],[[0]],extra)).harness;
+      return (await mainFixture([reply(JSON.stringify({...preparation,queries:["find "+key]})),reply(JSON.stringify(final))],[[0]],extra)).harness;
     }};
   try{
     let session=await PaperWebSession.open(options);
     await session.configure(["p1"],false);
     await assert.rejects(session.configure(["not-in-corpus"],false),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_SCOPE");
     await assert.rejects(session.configure(["p1"],true),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_CONFIG");
-    const first=await session.ask("p1 requested fact");assert.equal(first.turns[0].status,"completed");
+    const events:WebActivity[]=[];
+    const first=await session.ask("p1 requested fact",event=>events.push(event));assert.equal(first.turns[0].status,"completed");
+    assert.ok(events.some(e=>e.kind==="model"&&e.status==="running"));
+    assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.status==="completed"));
+    assert.equal(events.at(-1)?.kind,"memory");assert.equal(events.at(-1)?.status,"completed");
+    assert.ok(!JSON.stringify(events).includes(key));assert.ok(!JSON.stringify(events).includes('"response_text"'));
+    assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.detail.includes("[REDACTED]")));
+    assert.ok(first.turns[0].activity?.every(e=>e.status!=="running"));
     assert.equal(first.turns[0].sources[0].text,seed.chunks[0].text);assert.equal(first.budget.model_attempts,2);assert.equal(first.memory.paper_id,"p1");
     await session.close();session=await PaperWebSession.open(options);const restored=await session.view();
     assert.equal(restored.turns.length,1);assert.deepEqual(restored.scope,["p1"]);assert.equal(restored.memory.paper_id,"p1");
+    assert.deepEqual(restored.turns[0].activity,first.turns[0].activity);
     const second=await session.ask("And the same fact?");assert.equal(second.turns.length,2);assert.equal(second.budget.turns_reserved,2);assert.equal(second.budget.model_attempts,4);
     await session.close();
     for(const name of await readdir(join(root,"turns"))){const text=await readFile(join(root,"turns",name),"utf8");assert.ok(!text.includes(key));assert.ok(!text.includes("internal_drafts"));assert.ok(!text.includes('"original_response"'));}
