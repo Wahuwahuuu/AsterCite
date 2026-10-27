@@ -56,6 +56,27 @@ test("PDF HTTP route is restricted to catalog papers and the website access toke
     assert.ok(!(await (await fetch(f.origin+"/api/config")).text()).includes("owner-website-token"));
   }finally{await f.close();}
 });
+
+test("request details and Chinese translations belong to the owning session and cited source",async()=>{
+  let translations=0;
+  const f=await fixture({translate:async(sources)=>{translations++;assert.deepEqual(sources,[{chunk_id:"source-one",text:"Original source."}]);return {cached:false,items:[{chunk_id:"source-one",text:"原始依据。"}]};}});
+  try{
+    const a=await (await f.post("/api/sessions",{})).json(),b=await (await f.post("/api/sessions",{})).json();
+    const turn="11111111-1111-4111-8111-111111111111",event="22222222-2222-4222-8222-222222222222",directory=join(f.root,".local/web/sessions",a.id);
+    await mkdir(join(directory,"turns"));await mkdir(join(directory,"traces"));
+    const bytes=JSON.stringify([{id:event,kind:"model",status:"completed",phase:"agent",stage:"generate",turn_id:turn,cycle:1,elapsed_ms:2,input:{format:"provider_payload",messages:[{role:"user",text:"user question"}],tools:[],settings:{}},output:{text:"visible answer",tool_calls:[]}}])+"\n";
+    await writeFile(join(directory,"traces",turn+".json"),bytes);await writeFile(join(directory,"turns",turn+".json"),JSON.stringify({trace_sha256:sha(bytes),web_turn:{sources:[{chunk_id:"source-one",text:"Original source."}]}}));
+    const detailPath=`/api/sessions/${a.id}/traces/${turn}/${event}`,own={"X-AsterCite-Session":a.token};
+    assert.equal((await fetch(f.origin+detailPath)).status,403);assert.equal((await fetch(f.origin+detailPath,{headers:{"X-AsterCite-Session":b.token}})).status,403);
+    const detail=await fetch(f.origin+detailPath,{headers:own});assert.equal(detail.status,200);assert.equal((await detail.json()).detail.input.messages[0].text,"user question");
+    const path=`/api/sessions/${a.id}/translate`,request={turn_id:turn,chunk_ids:["source-one"]};
+    assert.equal((await f.post(path,request,{"X-AsterCite-Session":b.token})).status,403);
+    assert.equal((await f.post(path,request,{...own,Origin:"https://different.invalid"})).status,403);
+    assert.equal((await f.post(path,{...request,text:"arbitrary prompt"},own)).status,400);
+    assert.equal((await f.post(path,{turn_id:turn,chunk_ids:["not-cited"]},own)).status,400);assert.equal(translations,0);
+    const translated=await f.post(path,request,own);assert.equal(translated.status,200);assert.equal((await translated.json()).items[0].text,"原始依据。");assert.equal(translations,1);
+  }finally{await f.close();}
+});
 test("HTTP isolates browser sessions, requires same-origin changes, rejects credentials and private paths",async()=>{
   const f=await fixture();
   try{
@@ -124,6 +145,8 @@ test("website adapter runs the existing Harness, saves citations and restores me
     assert.ok(!JSON.stringify(events).includes(key));assert.ok(!JSON.stringify(events).includes('"response_text"'));
     assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.detail.includes("[REDACTED]")));
     assert.ok(first.turns[0].activity?.every(e=>e.status!=="running"));
+    const firstModel=events.find(e=>e.kind==="model")!;
+    const detail=await session.detail(first.turns[0].turn_id!,firstModel.id);assert.ok(detail?.input);assert.ok(detail?.output);assert.ok(!JSON.stringify(detail).includes(key));
     assert.equal(first.turns[0].sources[0].text,seed.chunks[0].text);assert.equal(first.budget.model_attempts,2);assert.equal(first.memory.paper_id,"p1");
     await session.close();session=await PaperWebSession.open(options);const restored=await session.view();
     assert.equal(restored.turns.length,1);assert.deepEqual(restored.scope,["p1"]);assert.equal(restored.memory.paper_id,"p1");

@@ -9,6 +9,7 @@ import { PythonWorkerClient } from "./worker-client.ts";
 
 export const PROJECT_ROOT=fileURLToPath(new URL("../",import.meta.url));
 export const CORE_FILES=["agent/contracts.ts","agent/domain-memory.ts","agent/final-answer.ts","agent/full-stages-main-v2.ts","agent/full-stages.ts","agent/ledger.ts","agent/main-controls.ts","agent/main-r2-check-v2.ts","agent/main-reliability-v2.ts","agent/p2-r2.ts","agent/p2-stages.ts","agent/pipeline-trace-prepared-v1.ts","agent/pipeline-trace.ts","agent/question-preparation.ts","agent/session-main-v2.ts","agent/session-memory.ts","agent/tools.ts","agent/worker-client.ts"];
+CORE_FILES.push("agent/execution-trace.ts","agent/selected-scope.ts");
 export interface Assets {root:string;indexVersion:string;publicPapers:Paper[];evidenceIndex:Map<string,EvidenceIdentity>;implementationId:string;commonPrompt:string}
 export async function fileHash(path:string):Promise<string>{
   const h=createHash("sha256");for await(const part of createReadStream(path))h.update(part as Buffer);return h.digest("hex");

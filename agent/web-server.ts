@@ -6,13 +6,15 @@ import { pathToFileURL } from "node:url";
 import { PROJECT_ROOT, loadAssets, createWorker, fileHash } from "./assets.ts";
 import { readConfig, containedPath, sha } from "./config.ts";
 import { RuntimeFailure, type Paper, type Chunk } from "./contracts.ts";
-import { PaperWebSession, type WebSessionFactory, type WebSessionPort } from "./web-session.ts";
+import { PaperWebSession,readSavedTrace, type WebSessionFactory, type WebSessionPort } from "./web-session.ts";
 import { PaperPdfCache, originalPdfUrl } from "./paper-pdf.ts";
+import { SourceTranslation,type SourceTranslator } from "./source-translation.ts";
 
 export interface WebServerOptions {
   root:string; mode:"demo"|"live"; factory?:WebSessionFactory; papers?:readonly Paper[];
   modelLabel?:string; accessToken?:string; publicOrigin?:string; maxSessions?:number;
   pdfFetch?:typeof fetch;
+  translate?:SourceTranslator;
 }
 const STATIC_FILES:Record<string,{file:string;type:string}>={
   "/":{file:"index.html",type:"text/html; charset=utf-8"},
@@ -28,6 +30,11 @@ const STATIC_FILES:Record<string,{file:string;type:string}>={
   ,"/showcase.json":{file:"showcase.json",type:"application/json; charset=utf-8"}
   ,"/vendor/pdf.mjs":{file:"vendor/pdf.mjs",type:"text/javascript; charset=utf-8"}
   ,"/vendor/pdf.worker.mjs":{file:"vendor/pdf.worker.mjs",type:"text/javascript; charset=utf-8"}
+  ,"/trace.html":{file:"trace.html",type:"text/html; charset=utf-8"}
+  ,"/trace.js":{file:"trace.js",type:"text/javascript; charset=utf-8"}
+  ,"/trace-view.js":{file:"trace-view.js",type:"text/javascript; charset=utf-8"}
+  ,"/trace-inspector.js":{file:"trace-inspector.js",type:"text/javascript; charset=utf-8"}
+  ,"/trace.css":{file:"trace.css",type:"text/css; charset=utf-8"}
 };
 const safeEqual=(a:string,b:string)=>timingSafeEqual(Buffer.from(sha(a),"hex"),Buffer.from(sha(b),"hex"));
 function failure(code:string):{status:number;message:string}{
@@ -41,6 +48,9 @@ function failure(code:string):{status:number;message:string}{
     INVALID_SESSION:{status:409,message:"会话文件无法读取，请新建会话。"},INVALID_BUDGET:{status:409,message:"会话配置已经变化，请新建会话。"},
     INVALID_SNAPSHOT:{status:409,message:"会话配置已经变化，请新建会话。"}
     ,PDF_UNAVAILABLE:{status:502,message:"PDF 暂时无法加载，请重试或打开官方原文。"}
+    ,TRANSLATION_FAILED:{status:502,message:"译文暂时未能生成，可重试或查看英文原文。"}
+    ,TRANSLATION_LIMIT:{status:429,message:"本轮译文请求已达到上限，可继续阅读英文原文。"}
+    ,TRANSLATION_BUSY:{status:409,message:"正在翻译其他片段，请稍后重试。"}
   };
   return known[code]??{status:502,message:"问答未完成，请检查模型服务或稍后重试。"};
 }
@@ -66,6 +76,7 @@ export async function createWebServer(options:WebServerOptions){
   if(!papers)try{papers=JSON.parse(await readFile(join(options.root,"web/config.json"),"utf8")).papers;}catch{papers=[];}
   const pdfs=new PaperPdfCache(options.root,new Set((papers??[]).map(p=>p.paper_id)),options.pdfFetch);
   let processing=false,creating=false;
+  const liveSessions=new Map<string,WebSessionPort>();
   const server=createServer(async(req,res)=>{
     headers(res);
     try{
@@ -106,12 +117,25 @@ export async function createWebServer(options:WebServerOptions){
           json(res,201,{id,token});return;
         }finally{creating=false;}
       }
-      const match=/^\/api\/sessions\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/(question(?:\/stream)?|settings))?$/u.exec(url.pathname);
+      const match=/^\/api\/sessions\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/(question(?:\/stream)?|settings|translate|traces\/[a-f0-9-]{36}\/(?:host-)?[a-f0-9-]{36}))?$/u.exec(url.pathname);
       if(!match)throw new RuntimeFailure("NOT_FOUND","No session route");
       const dir=await containedPath(options.root,".local/web/sessions/"+match[1]);
       let owner:{token_digest:string};try{owner=JSON.parse(await readFile(await containedPath(dir,"owner.json"),"utf8"));}catch{throw new RuntimeFailure("NOT_FOUND","Missing session");}
       const token=String(req.headers["x-astercite-session"]??"");
       if(!token||!safeEqual(owner.token_digest,sha(token)))throw new RuntimeFailure("FORBIDDEN","Session owner differs");
+      if(method==="GET"&&match[2]?.startsWith("traces/")){
+        const [,turnId,eventId]=match[2].split("/");
+        const detail=await liveSessions.get(match[1])?.detail?.(turnId,eventId)??await readSavedTrace(dir,turnId,eventId);
+        if(!detail)throw new RuntimeFailure("NOT_FOUND","No trace details");json(res,200,{detail});return;
+      }
+      if(method==="POST"&&match[2]==="translate"){
+        if(!options.translate)throw new RuntimeFailure("TRANSLATION_FAILED","No translation service");
+        const input=await body(req);only(input,["turn_id","chunk_ids"]);
+        if(typeof input.turn_id!=="string"||!/^[a-f0-9-]{36}$/u.test(input.turn_id)||!Array.isArray(input.chunk_ids)||input.chunk_ids.length<1||input.chunk_ids.length>2||new Set(input.chunk_ids).size!==input.chunk_ids.length||input.chunk_ids.some(id=>typeof id!=="string"||id.length>300))throw new RuntimeFailure("INVALID_INPUT","Invalid translation source");
+        const saved=JSON.parse(await readFile(await containedPath(dir,`turns/${input.turn_id}.json`),"utf8"));
+        const sources=(input.chunk_ids as string[]).map(id=>{const source=saved.web_turn?.sources?.find((s:{chunk_id:string})=>s.chunk_id===id);if(!source||typeof source.text!=="string"||source.text.length>12000)throw new RuntimeFailure("INVALID_INPUT","Source is not cited by this turn");return {chunk_id:id,text:source.text};});
+        json(res,200,await options.translate(sources,dir,input.turn_id));return;
+      }
       if(processing)throw new RuntimeFailure("SESSION_LOCKED","A question is running");
       let action:"view"|"ask"|"settings";
       if(method==="GET"&&!match[2])action="view";
@@ -133,6 +157,7 @@ export async function createWebServer(options:WebServerOptions){
         // Resolve all existing private subpaths too, before the adapter can open them.
         for(const sub of ["ledger","turns","checkpoints","session.lock"])await containedPath(dir,sub);
         session=await options.factory(dir);
+        if(action==="ask")liveSessions.set(match[1],session);
         if(action==="ask"&&match[2]==="question/stream"){
           res.writeHead(200,{"Content-Type":"application/x-ndjson; charset=utf-8","X-Accel-Buffering":"no"});res.setTimeout(0);
           const send=(value:unknown)=>{if(!res.destroyed&&!res.writableEnded)res.write(JSON.stringify(value)+"\n");};
@@ -142,7 +167,7 @@ export async function createWebServer(options:WebServerOptions){
         }
         const value=action==="ask"?await session.ask(input.question as string):action==="settings"?await session.configure(input.scope as string[],input.compact as boolean):await session.view();
         json(res,200,value);
-      }finally{if(heartbeat)clearInterval(heartbeat);try{await session?.close();}finally{processing=false;}}
+      }finally{if(heartbeat)clearInterval(heartbeat);liveSessions.delete(match[1]);try{await session?.close();}finally{processing=false;}}
     }catch(e){
       const code=e instanceof RuntimeFailure?e.code:(e as NodeJS.ErrnoException).code==="ENOENT"?"NOT_FOUND":"RUNTIME_ERROR";
       const f=failure(code);if(!res.headersSent)json(res,f.status,{error:f.message,code});else if(!res.destroyed)res.end(JSON.stringify({type:"error",error:f.message,code})+"\n");
@@ -180,6 +205,7 @@ export async function startWeb(args:string[],root=PROJECT_ROOT){
       const sources=new Map(sourceRows.map(c=>[c.chunk_id,c]));
       options.factory=directory=>PaperWebSession.open({directory,assets,config,worker:worker!,sources,key});
       options.papers=assets.publicPapers;options.modelLabel=config.model.model_id;
+      const translator=new SourceTranslation(root,config,key);options.translate=(sources,directory,turnId)=>translator.translate(sources,directory,turnId);
     }
     const server=await createWebServer(options);
     await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(flags.port,flags.host,()=>resolve());});

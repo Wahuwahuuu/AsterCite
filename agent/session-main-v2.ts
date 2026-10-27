@@ -6,7 +6,7 @@ import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManage
 import { RuntimeFailure, TOOL_NAMES, errorText, redactText, type WorkerTransport, type RetrieveResult, type P2HarnessConfig, type Chunk } from "./contracts.ts";
 import { TurnLedger, observeUsage, toolContextEvidence, type TurnRecord, type RequestRecord, type ToolContextEvidence } from "./ledger.ts";
 import { createPaperTools, validatePaperParams } from "./tools.ts";
-import { P2_COMMON_PROMPT, FRAME_INSTRUCTION, CHECK_INSTRUCTION, normalizeStageJSON, parseQuestionFrame, parseEvidenceCheck, type QuestionFrame, type EvidenceCheck } from "./p2-stages.ts";
+import { P2_COMMON_PROMPT, FRAME_INSTRUCTION, CHECK_INSTRUCTION, normalizeStageJSON, stageObject, parseQuestionFrame, parseEvidenceCheck, type QuestionFrame, type EvidenceCheck } from "./p2-stages.ts";
 import { FRAME_R2_INSTRUCTION, CHECK_R2_INSTRUCTION, parseR2Check, citationIds, HostEvidenceRegistry, queryIdentity, type R2Check } from "./p2-r2.ts";
 import { FULL_FRAME_INSTRUCTION, FULL_CHECK_INSTRUCTION, parseFullFrame, parseFullCheck, type FullFrame } from "./full-stages.ts";
 import { DomainMemory, type DialogueRecord } from "./domain-memory.ts";
@@ -14,6 +14,8 @@ import { nativeMemoryExtension, MEMORY_EXTENSION, safeSessionEntries, restoreSna
 import { parseFinalAnswer, FINAL_ANSWER_INSTRUCTION } from "./final-answer.ts";
 import { preparedPipelineTrace, type PreparedTurnRecord } from "./pipeline-trace-prepared-v1.ts";
 import { QUESTION_PREPARATION_INSTRUCTION, PREPARATION_VERSION, parseQuestionPreparation, preparationPayload, rawQuestionFrame, type PreparationContext, type PreparationRecord } from "./question-preparation.ts";
+import { traceInput,traceOutput,traceArguments,type ExecutionEvent } from "./execution-trace.ts";
+import { selectedTargets,coverageInstruction,validateCoverage } from "./selected-scope.ts";
 
 // Versioned main controls; historical prepared/session implementations remain frozen.
 
@@ -56,6 +58,8 @@ export interface MainHarnessOptions {
   controls: RuntimeControls;
   thinkingLevel?: import("./config.ts").ThinkingLevel;
   authorizeRequest?: (request: RequestRecord) => Promise<void>;
+  onExecutionEvent?: (event:ExecutionEvent)=>void;
+  selectedScopeCoverage?:boolean;
   controlledSnapshot?: ControlledSnapshot;
   cwd: string;
   worker: WorkerTransport;
@@ -106,6 +110,8 @@ export class MainPaperHarness {
   private dialogue: DialogueRecord[] = [];
   private compactBeforeNextTurn = false;
   private autonomousPreparation = false;
+  private selectedRequired:string[]=[];
+  private trace(event:ExecutionEvent):void{try{this.options.onExecutionEvent?.(JSON.parse(redactText(JSON.stringify(event),this.options.secrets)));}catch{/* Observation must never change inference. */}}
   private autonomousEvidenceBefore = new Set<string>();
   private preparation: PreparationRecord = { version: PREPARATION_VERSION, status: "skipped", request_id: null, reason: "No user turn", result: null };
   private get useDomainMemory(): boolean { return this.full && this.options.p2?.profile === "B" && this.options.p2.structuredMemory !== false; }
@@ -137,6 +143,7 @@ export class MainPaperHarness {
       if (event.type === "tool_execution_start") {
         try {
           const entry = ledger.beginTool(event.toolName, event.toolCallId, "start");
+          if(this.options.onExecutionEvent&&TOOL_NAMES.includes(event.toolName as typeof TOOL_NAMES[number]))this.trace({id:event.toolCallId,kind:"tool",status:"running",stage:ledger.stage,phase:ledger.phase,parent_id:ledger.record.requests.at(-1)?.request_id,origin:"model",tool:event.toolName as typeof TOOL_NAMES[number],input:traceArguments(event.args)});
           if (this.r2) entry.execution_source = "model";
           if (options.p2 && ledger.closing) { ledger.rejectTool(event.toolCallId, new Error("Model requested a tool while retrieval was closed")); ledger.fail("PROTOCOL_ERROR", new Error("Model requested a tool while retrieval was closed")); }
           else if (options.p2 && ledger.toolCount(event.toolName) >= ledger.toolLimit(event.toolName)) {
@@ -156,6 +163,7 @@ export class MainPaperHarness {
       if (event.type === "tool_execution_end") {
         ledger.endTool(event.toolCallId, event.isError);
         const tool = ledger.record.tools.findLast((entry) => entry.tool_call_id === event.toolCallId);
+        if(this.options.onExecutionEvent&&TOOL_NAMES.includes(event.toolName as typeof TOOL_NAMES[number]))this.trace({id:event.toolCallId,kind:"tool",status:event.isError?"error":"completed",stage:ledger.stage,phase:ledger.phase,parent_id:tool?.model_request_id??ledger.record.requests.at(-1)?.request_id,origin:"model",tool:event.toolName as typeof TOOL_NAMES[number],output:traceOutput(event.result,this.options.secrets),elapsed_ms:tool?.elapsed_ms});
         if (event.isError && (!options.p2 || (tool?.status !== "budget_rejected" && tool?.status !== "rejected"))) ledger.fail("TOOL_ERROR", new Error("Pi tool execution failed"));
         else if (event.toolName === "retrieve_chunks") {
           const details = event.result.details as RetrieveResult | undefined;
@@ -237,6 +245,7 @@ export class MainPaperHarness {
         catch (error) { request.status = "error"; request.error = ledger.errorText(error); ledger.fail("INVALID_AUTHORIZATION", error); throw error; }
       }
       const started = Date.now();
+      if(this.options.onExecutionEvent)this.trace({id:request.request_id,kind:"model",status:"running",stage:request.stage??"agent",phase:request.phase,input:traceInput(providerContext,"sdk_context",this.options.secrets)});
       const timeout = AbortSignal.timeout(this.options.requestTimeoutMs ?? 90_000);
       const signals = [options?.signal, this.turnController?.signal, timeout].filter((item): item is AbortSignal => item !== undefined);
       const signal = AbortSignal.any(signals);
@@ -252,6 +261,7 @@ export class MainPaperHarness {
               ledger.fail(failure.code, failure); throw failure;
             }
             request.http_attempts++;
+            if(this.options.onExecutionEvent&&typeof init?.body==="string")try{this.trace({id:request.request_id,kind:"model",status:"running",stage:request.stage??"agent",phase:request.phase,input:traceInput(JSON.parse(init.body),"provider_payload",this.options.secrets)});}catch{/* Non-JSON transports retain the SDK projection. */}
             return nativeFetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal });
           },
           onResponse: async (response, requestModel) => {
@@ -266,10 +276,12 @@ export class MainPaperHarness {
         const completion = response.result().then((message) => {
           if (timeout.aborted) ledger.fail("REQUEST_TIMEOUT", new RuntimeFailure("REQUEST_TIMEOUT", "Model request timed out"));
           ledger.endRequest(request, message, started);
+          if(this.options.onExecutionEvent)this.trace({id:request.request_id,kind:"model",status:["error","aborted"].includes(message.stopReason)?"error":"completed",stage:request.stage??"agent",phase:request.phase,output:traceOutput(message,this.options.secrets),elapsed_ms:Date.now()-started});
           if (request.phase === "agent") this.lastMainRequest = request;
         }).catch((error: unknown) => {
           request.status = "error"; request.elapsed_ms = Date.now() - started;
           request.error = errorText(error, this.options.secrets); ledger.fail("MODEL_ERROR", error);
+          this.trace({id:request.request_id,kind:"model",status:"error",stage:request.stage??"agent",phase:request.phase,elapsed_ms:Date.now()-started});
         });
         this.pendingRequests.add(completion);
         void completion.finally(() => this.pendingRequests.delete(completion));
@@ -277,6 +289,7 @@ export class MainPaperHarness {
       } catch (error) {
         request.status = "error"; request.elapsed_ms = Date.now() - started;
         request.error = errorText(error, this.options.secrets); ledger.fail("MODEL_ERROR", error);
+        this.trace({id:request.request_id,kind:"model",status:"error",stage:request.stage??"agent",phase:request.phase,elapsed_ms:Date.now()-started});
         throw error;
       }
     });
@@ -324,7 +337,7 @@ export class MainPaperHarness {
       if (ledger.requestCount >= ledger.maxRequests - 1 && !["generate", "closing", "citation_repair"].includes(ledger.stage)) {
         this.enterClosing("Exploration request allowance exhausted");
       }
-      const instruction = this.stageInstruction();
+      const instruction = this.stageInstruction()+"\n"+coverageInstruction(this.selectedRequired,this.options.p2?.publicPapers??[]);
       const memory = this.useDomainMemory ? [{ role: "system" as const, content: JSON.stringify(this.memory.projection()), timestamp: Date.now() }] : [];
       const projected = [...context.messages, ...memory, ...(instruction ? [{ role: "system" as const, content: instruction, timestamp: Date.now() }] : [])];
       return { ...previous, context: { ...context, tools: this.session.agent.state.tools.slice(),
@@ -434,9 +447,14 @@ export class MainPaperHarness {
     const ledger = this.activeLedger();
     ledger.record.final_request_id = this.lastMainRequest?.request_id ?? null;
     try {
+      let parseOutput=output;
+      const rawSelected=this.selectedRequired.length?stageObject(output):undefined;
+      if(rawSelected){const {paper_coverage:_coverage,...ordinary}=rawSelected;parseOutput=JSON.stringify(ordinary);}
       const intent = (this.frame as FullFrame | undefined)?.intent;
       const kind = intent && !this.autonomousPreparation ? intent === "session_control" ? "session_control" : intent === "paper_discovery" ? "catalog" : "paper_fact" : undefined;
-      const value = this.candidate ? parseCandidateFinal(output, this.lastMainEvidence, this.options.p2?.profile === "A" || !this.check?.checks.some((need) => need.status !== "supported"), Boolean(this.frame?.ambiguity), kind, this.audit("final_answer", output)) : parseFinalAnswer(output, this.lastMainEvidence, this.options.p2?.profile === "A" || !this.check?.checks.some((need) => need.status !== "supported"), Boolean(this.frame?.ambiguity), kind);
+      const value = this.candidate ? parseCandidateFinal(parseOutput, this.lastMainEvidence, this.options.p2?.profile === "A" || !this.check?.checks.some((need) => need.status !== "supported"), Boolean(this.frame?.ambiguity), kind, this.audit("final_answer", output)) : parseFinalAnswer(parseOutput, this.lastMainEvidence, this.options.p2?.profile === "A" || !this.check?.checks.some((need) => need.status !== "supported"), Boolean(this.frame?.ambiguity), kind);
+      if(rawSelected)value.paper_coverage=validateCoverage(rawSelected.paper_coverage,this.selectedRequired,this.lastMainEvidence,value.answer);
+      if(value.paper_coverage?.some(p=>p.status==="insufficient")&&value.status==="answer")throw new RuntimeFailure("ANSWER_SCOPE_ERROR","Selected papers have evidence gaps; use status=partial or refusal and state each paper gap");
       if (this.generationRepair?.code === "INVALID_CITATION" && citationIds(value.answer).length === 0) throw new RuntimeFailure("INVALID_CITATION", "Correction removed all invalid citations instead of binding an actual source");
       ledger.record.final_structure = value; ledger.record.business_status = value.status;
       this.answer = value.answer;
@@ -499,6 +517,8 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       const entry = ledger.beginTool("retrieve_chunks", id, "start");
       entry.execution_source = "host_plan"; entry.plan_request_id = planRequestId; entry.model_request_id = null;
       const toolCall = { type: "toolCall" as const, id, name: "retrieve_chunks", arguments: { query: query.query, paper_ids: query.paper_ids, top_k: 5 } };
+      const toolStarted=Date.now();
+      if(this.options.onExecutionEvent)this.trace({id,kind:"tool",status:"running",stage,phase:ledger.phase,parent_id:planRequestId,origin:"host_plan",tool:"retrieve_chunks",input:toolCall.arguments});
       // runToolCall requires a caller-message carrier for hooks. It is not a provider response:
       // no usage is fabricated, no assistant event is emitted, and this carrier is never persisted.
       const caller = { role: "assistant", content: [toolCall], timestamp: Date.now() } as unknown as AssistantMessage;
@@ -508,6 +528,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
         tools: this.session.agent.state.tools, beforeToolCall: this.session.agent.beforeToolCall, afterToolCall: this.session.agent.afterToolCall,
         signal: AbortSignal.any(signals) });
       ledger.endTool(id, outcome.isError);
+      if(this.options.onExecutionEvent)this.trace({id,kind:"tool",status:outcome.isError?"error":"completed",stage,phase:ledger.phase,parent_id:planRequestId,origin:"host_plan",tool:"retrieve_chunks",output:traceOutput(outcome.result,this.options.secrets),elapsed_ms:Date.now()-toolStarted});
       if (outcome.isError) {
         if (entry.status === "budget_rejected" || entry.status === "rejected") continue;
         throw new RuntimeFailure(ledger.failureCode ?? "TOOL_ERROR", "Host planned tool execution failed");
@@ -585,7 +606,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     try {
       ledger.phase = "auxiliary"; ledger.stage = "question_preparation";
       const payload = preparationPayload(context, this.memory.projection(), nativeSummary?.type === "compaction" ? nativeSummary.summary : undefined);
-      const messages = normalizeContext({ messages: [{ role: "system", content: QUESTION_PREPARATION_INSTRUCTION, timestamp: Date.now() },
+      const messages = normalizeContext({ messages: [{ role: "system", content: QUESTION_PREPARATION_INSTRUCTION+(this.selectedRequired.length?`\nThe user selected these papers as required objects: ${JSON.stringify(this.selectedRequired)}. Preserve ALL of them in targets; do not replace the plural question by an earlier single-paper topic. Queries must retain the original question.`:""), timestamp: Date.now() },
         { role: "user", content: [{ type: "text", text: JSON.stringify(payload) }], timestamp: Date.now() }] });
       const response = await this.session.agent.streamFunction(this.options.model, messages, {
         ...(this.options.model.reasoning && this.options.thinkingLevel !== "off" ? { reasoning: this.options.thinkingLevel ?? "low" } : {}), signal,
@@ -602,6 +623,13 @@ Complete this retrieval batch through the declared tools. If separate queries ar
         if (result.stopReason === "length") throw new RuntimeFailure("STAGE_TRUNCATED", "Preparation hit its output limit; original-question fallback retained");
         if (attemptedTools.length) throw new RuntimeFailure("PREPARATION_ERROR", "Preparation requested a tool; no such tool was executed");
         const prepared = this.candidate ? parseCandidatePreparation(visible, context, this.audit("question_preparation", visible)) : parseQuestionPreparation(visible, context);
+        if(["paper_discovery","session_control"].includes(prepared.frame.intent))this.selectedRequired=[];
+        if(this.selectedRequired.length){
+          prepared.frame.ordered_targets=this.selectedRequired.slice(0,4);prepared.frame.candidate_papers=[...prepared.frame.ordered_targets];prepared.frame.intent="scoped_summary";prepared.frame.ambiguity=null;
+          prepared.frame.queries=this.selectedRequired.slice(0,2).map(id=>({query:Array.from(`${this.options.p2!.publicPapers.find(p=>p.paper_id===id)?.title??id}. ${this.input}`).slice(0,1000).join(""),paper_ids:[id]}));
+          prepared.frame.information_needs.push(...this.selectedRequired.slice(0,4).map((id,i)=>({need_id:`selected_${i+1}`,text:`Address selected paper ${id} individually, or explicitly explain the source gap for this paper.`})));
+          prepared.rewrite=this.input;prepared.routing="host_queries";prepared.warnings.push("web_selected_scope_preserved");
+        }
         this.frame = prepared.frame;
         this.memory.applyFrame(prepared.frame, ledger.record.user_turn_id);
         this.preparation = { version: PREPARATION_VERSION, status: "completed", request_id: requestId, reason: null, result: prepared };
@@ -636,6 +664,15 @@ Complete this retrieval batch through the declared tools. If separate queries ar
 
   private async completeFullReflect(signal?: AbortSignal): Promise<void> {
     const ledger = this.activeLedger();
+    if(this.selectedRequired.length){
+      const evidencePapers=new Set([...this.r2Evidence().values()].map(c=>c.paper_id));
+      const attempted=new Set(ledger.record.tools.filter(t=>t.tool_name==="retrieve_chunks"&&t.executed).flatMap(t=>t.paper_ids));
+      const missing=this.selectedRequired.filter(id=>!evidencePapers.has(id)&&!attempted.has(id)).slice(0,Math.max(0,4-ledger.toolCount("retrieve_chunks")));
+      for(let offset=0;offset<missing.length;offset+=2){
+        const queries=missing.slice(offset,offset+2).map(id=>({query:Array.from(`${this.options.p2!.publicPapers.find(p=>p.paper_id===id)?.title??id}. ${this.input}`).slice(0,1000).join(""),paper_ids:[id]}));
+        await this.hostBatch(queries,"retrieve_selected",this.preparation.request_id??ledger.record.requests.at(-1)!.request_id,signal);
+      }
+    }
     if (!this.useReflect) { this.enterClosing("Reflect disabled by C component control; no host supplement", "generate"); return; }
     if (ledger.remainingRequests < 2) throw new RuntimeFailure("BUDGET_EXCEEDED", "B must reserve Reflect and Generate");
     this.check = await this.r2Check("evidence_check", signal);
@@ -704,6 +741,8 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       throw new RuntimeFailure("INVALID_SCOPE", "Declared scope must contain distinct known paper IDs");
     }
     this.scope = [...declaredScope];
+    const required=this.options.selectedScopeCoverage?selectedTargets(userText,declaredScope,this.options.p2?.publicPapers??[]):[];
+    this.selectedRequired=required.length>1?required:[];
     this.answer = "";
     this.adaptations = [];
     this.input = userText; this.frame = undefined; this.check = undefined; this.supplementUsed = false; this.batchReservations = 0;

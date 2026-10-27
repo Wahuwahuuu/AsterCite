@@ -4,7 +4,7 @@ import { citationIds } from "./p2-r2.ts";
 
 export type BusinessStatus = "answer" | "partial" | "refusal" | "clarification";
 export type AnswerKind = "paper_fact" | "catalog" | "session_control";
-export interface FinalAnswer { status: BusinessStatus; answer_kind: AnswerKind; answer: string; exact_quotes: Array<{ chunk_id: string; quote: string; start: number; end: number }> }
+export interface FinalAnswer { status: BusinessStatus; answer_kind: AnswerKind; answer: string; exact_quotes: Array<{ chunk_id: string; quote: string; start: number; end: number }>;paper_coverage?:import("./selected-scope.ts").PaperCoverage[] }
 export const FINAL_ANSWER_INSTRUCTION = `Return only one JSON object: {"status":"answer|partial|refusal|clarification","answer":"final user-facing text","exact_quotes":[]}.
 Answer and partial require actual visible citations [cite:chunk_id]. Clarification asks about a genuinely ambiguous object/meaning.
 Optional answer_kind defaults to paper_fact. Only catalog/session_control may omit paper citations; explicitly declare that kind and make no paper research claims. These labels do not prove semantic correctness.
