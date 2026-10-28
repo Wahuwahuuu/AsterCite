@@ -13,11 +13,13 @@ import type { PaperCoverage } from "./selected-scope.ts";
 import {corpusAbstracts} from './paper-reading.ts';
 import {ContextTracker,type ContextView} from './workbench-context.ts';
 import type {ReadingNote} from './domain-memory.ts';
+import type {AnswerUpdate} from './answer-stream.ts';
 
 export interface WebSource { chunk_id:string; paper_id:string; title:string; section:string; text:string }
 export interface WebExecutionDetail extends ExecutionEvent {turn_id:string;cycle:number;elapsed_ms:number;turn_elapsed_ms:number;started_at:string}
 export interface WebActivity { id:string; kind:"model"|"tool"|"memory"|"compaction"; status:"running"|"completed"|"error"; label:string; detail:string; elapsed_ms:number; tool?:"search_papers"|"retrieve_chunks";turn_id?:string;cycle?:number;parent_id?:string;origin?:"model"|"host_plan";has_details?:boolean;context?:ContextView }
 export type ProgressListener=(activity:WebActivity)=>void;
+export type AnswerListener=(update:AnswerUpdate&{sources:WebSource[]})=>void;
 export interface WebTurn { question:string; answer:string; status:string; sources:WebSource[]; elapsed_ms:number; requests:number; tokens:number|null; stages:Array<{stage:string;status:string}>; activity?:WebActivity[];turn_id?:string;coverage?:PaperCoverage[] }
 export interface WebView {
   turns:WebTurn[]; scope:string[]; pending_compaction:boolean;
@@ -27,7 +29,7 @@ export interface WebView {
 }
 export interface WebSessionPort {
   view():Promise<WebView>;
-  ask(question:string,onProgress?:ProgressListener):Promise<WebView>;
+  ask(question:string,onProgress?:ProgressListener,onAnswer?:AnswerListener):Promise<WebView>;
   configure(scope:string[],compact:boolean):Promise<WebView>;
   close():Promise<void>;
   detail?(turnId:string,id:string):Promise<WebExecutionDetail|null>;
@@ -68,6 +70,7 @@ export class PaperWebSession implements WebSessionPort {
   private sources:ReadonlyMap<string,Chunk>;
   private key:string;
   private onProgress?:ProgressListener;
+  private onAnswer?:AnswerListener;
   private activity:WebActivity[]=[];
   private activityStarted=0;
   private traceDetails=new Map<string,WebExecutionDetail>();
@@ -129,7 +132,10 @@ export class PaperWebSession implements WebSessionPort {
     const provider=this.createHarness?undefined:await createUserRuntime(this.config.model,this.key);
     const options={cwd:this.assets.root,modelRuntime:provider?.runtime,model:provider?.model,worker:this.worker,
       knownPaperIds:new Set(this.assets.publicPapers.map(p=>p.paper_id)),secrets:[this.key],thinkingLevel:this.config.model.thinking_level,
-      questionPreparation:"light-v1" as const,answerPolicy:'workbench-v1' as const,controls:this.controls,selectedScopeCoverage:true,onExecutionEvent:(event:ExecutionEvent)=>this.observe(event),
+      questionPreparation:"light-v1" as const,answerPolicy:'workbench-v1' as const,controls:this.controls,selectedScopeCoverage:true,onExecutionEvent:(event:ExecutionEvent)=>this.observe(event),onAnswerUpdate:(update:AnswerUpdate)=>{
+        const sources=update.source_ids.flatMap(id=>{const source=this.sources.get(id);return source?[{chunk_id:id,paper_id:source.paper_id,title:this.assets.publicPapers.find(p=>p.paper_id===source.paper_id)?.title??source.paper_id,section:source.section,text:source.text}]:[];});
+        this.onAnswer?.(JSON.parse(redactText(JSON.stringify({...update,sources}),[this.key])));
+      },
       p2:{profile:"B" as const,executionVersion:"full-v1" as const,indexVersion:this.assets.indexVersion,evidenceIndex:this.assets.evidenceIndex,
         publicPapers:this.assets.publicPapers,commonPrompt:this.assets.commonPrompt,nlu:true,reflect:false,structuredMemory:true,answerContract:"full-v1-json" as const,
         stageOutputLimits:{question_frame:this.config.model.max_output_tokens,evidence_check:this.config.model.max_output_tokens,generation:this.config.model.max_output_tokens}},
@@ -161,11 +167,11 @@ export class PaperWebSession implements WebSessionPort {
     if(compact&&this.config.session.compaction!=="native")throw new RuntimeFailure("INVALID_CONFIG","Compaction is disabled");
     await this.budget.setScope(scope);await this.budget.compact(compact);return this.view();
   }
-  async ask(question:string,onProgress?:ProgressListener):Promise<WebView>{
+  async ask(question:string,onProgress?:ProgressListener,onAnswer?:AnswerListener):Promise<WebView>{
     if(!question.trim()||Array.from(question).length>12000)throw new RuntimeFailure("INVALID_INPUT","Question length must be 1..12000");
     if(this.busy||this.closed)throw new RuntimeFailure("SESSION_LOCKED","Session is busy");
     this.busy=true;
-    this.onProgress=onProgress;this.activity=[];this.traceDetails.clear();this.cycles=0;this.activityStarted=Date.now();
+    this.onProgress=onProgress;this.onAnswer=onAnswer;this.activity=[];this.traceDetails.clear();this.cycles=0;this.activityStarted=Date.now();
     try{
       const id=randomUUID();await this.budget.reserve(id,question);this.activeTurn=id;
       const harness=await this.getHarness();
@@ -183,7 +189,7 @@ export class PaperWebSession implements WebSessionPort {
       await this.budget.finish(id,sha(saved));this.history.push(JSON.parse(saved).web_turn);
       this.emit({id:"memory",kind:"memory",status:"completed",label:"保存会话与记忆",detail:"会话与记忆已保存"});
       this.snapshot=JSON.parse(snap);return this.view();
-    }finally{this.busy=false;this.onProgress=undefined;}
+    }finally{this.busy=false;this.onProgress=undefined;this.onAnswer=undefined;}
   }
   async close():Promise<void>{if(this.closed)return;this.closed=true;this.harness?.dispose();await this.budget.close();}
 }

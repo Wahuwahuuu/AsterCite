@@ -2,7 +2,7 @@ import {renderTrace} from './trace-view.js';
 
 const make=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
-export function executionTime(ms){const seconds=Math.max(0,ms)/1000;return seconds<60?seconds.toFixed(1)+' 秒':Math.floor(seconds/60)+' 分 '+(seconds%60).toFixed(1)+' 秒';}
+export function executionTime(ms){const seconds=Math.floor(Math.max(0,ms)/1000);return seconds<60?seconds+' 秒':Math.floor(seconds/60)+' 分 '+(seconds%60)+' 秒';}
 function modelNode(item,detail){
   const stage=(detail?.stage??'')+' '+(item.label??''),phase=detail?.phase??'';
   if(/nlu|prepar|question_frame|understand|intent|理解|意图|压缩/iu.test(stage))return 'understand';
@@ -184,14 +184,14 @@ export class ExecutionPlayback {
 }
 
 /** POST streams retain ownership headers; transport loss never retries an inference. */
-export async function readQuestionStream(response,onActivity){
+export async function readQuestionStream(response,onActivity,onAnswer=()=>{}){
   if(!response.ok){const error=await response.json();throw new Error(error.error||'问答服务未能连接。');}
   if(!response.body)throw new Error('浏览器未能读取执行过程，请刷新后恢复会话。');
   const reader=response.body.getReader(),decoder=new TextDecoder();let pending='',result;
   try{
     while(true){const {value,done}=await reader.read();pending+=decoder.decode(value,{stream:!done});
       let newline;while((newline=pending.indexOf('\n'))>=0){const line=pending.slice(0,newline);pending=pending.slice(newline+1);if(!line.trim())continue;
-        const item=JSON.parse(line);if(item.type==='activity')onActivity(item.event);else if(item.type==='result')result=item.view;else if(item.type==='error')throw new Error(item.error);
+        const item=JSON.parse(line);if(item.type==='activity')onActivity(item.event);else if(item.type==='answer')onAnswer(item.update);else if(item.type==='result')result=item.view;else if(item.type==='error')throw new Error(item.error);
       }
       if(pending.length>2000000)throw new Error('问答响应过长，请刷新后查看会话。');if(done)break;
     }

@@ -3,6 +3,8 @@ import {ActivityPanel,readQuestionStream} from './activity.js';
 import {PaperReader} from './paper-reader.js';
 import {TraceInspector} from './trace-inspector.js';
 import {SessionPanel} from './session-panel.js';
+import {renderMarkdown} from './markdown.js';
+import {AnswerPreview} from './answer-preview.js';
 
 const $=id=>document.getElementById(id);
 const make=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
@@ -95,17 +97,7 @@ function renderScope(){
   $('budget-hint').textContent=state.budget?'剩余 '+state.budget.remaining_turns+' 轮':'';
 }
 function inlineText(target,text,sources){
-  // Build text nodes and buttons; source and model text are never parsed as HTML.
-  const pattern=/\[cite:([^\]]+)\]|\*\*([^*]+)\*\*/g;let position=0;
-  for(const match of text.matchAll(pattern)){
-    target.append(document.createTextNode(text.slice(position,match.index)));position=match.index+match[0].length;
-    if(match[2]){target.append(make('strong',null,match[2]));continue;}
-    const index=sources.findIndex(s=>s.chunk_id===match[1]);
-    if(index<0){target.append(document.createTextNode('[引用不可用]'));continue;}
-    const b=make('button','citation',String(index+1));b.setAttribute('aria-label','查看引用 '+(index+1));
-    b.addEventListener('click',()=>{showSources(sources,index);readerTab('sources');openEvidence();});target.append(b);
-  }
-  target.append(document.createTextNode(text.slice(position)));
+  renderMarkdown(target,text,{sources,onCitation:index=>{showSources(sources,index);readerTab('sources');openEvidence();}});
 }
 function sourceContent(blocks){
   const content=make('div','source-content');
@@ -173,8 +165,8 @@ function renderMessages(){
     const user=make('article','message user'),head=make('div','message-heading');head.append(make('span','avatar','↗'),make('span',null,'你'));user.append(head,make('div','message-text',turn.question));box.append(user);
     const assistant=make('article','message assistant'),heading=make('div','message-heading');if(turn.turn_id)assistant.dataset.turnId=turn.turn_id;heading.append(make('span','avatar','✳'),make('span',null,'AsterCite'));assistant.append(heading);
     if(turn.coverage?.length){const chips=make('div','coverage-chips');for(const item of turn.coverage){const b=make('button','coverage-chip '+item.status,item.paper_id+' · '+(item.status==='addressed'?'已引用原文':'证据不足'));b.addEventListener('click',()=>openPdf(item.paper_id));chips.append(b);}assistant.append(chips);}
-    const laidOut=turn.answer.replace(/(【\d{4}\.\d{4,5}[^】]*】)/gu,'\n\n$1\n\n').replace(/\s+(结论[:：])/gu,'\n\n$1');
-    const text=make('div','message-text');for(const paragraph of laidOut.split(/\n\n+/).filter(p=>p.trim())){const isHeading=/^【\d{4}\.\d{4,5}[^】]*】$/u.test(paragraph.trim()),p=make(isHeading?'h3':'p',isHeading?'answer-section':'answer-paragraph');inlineText(p,paragraph,turn.sources);text.append(p);}assistant.append(text);
+    const laidOut=turn.answer.replace(/(【\d{4}\.\d{4,5}[^】]*】)/gu,'\n\n### $1\n\n');
+    const text=make('div','message-text');inlineText(text,laidOut,turn.sources);assistant.append(text);
     if(turn.coverage?.length){const coverage=make('details','paper-coverage');coverage.open=true;coverage.append(make('summary',null,`本轮逐篇分析 · ${turn.coverage.length} 篇论文`));
       for(const item of turn.coverage){const row=make('div','coverage-row');row.append(make('strong',null,item.paper_id+' · '+(state.papers.find(p=>p.paper_id===item.paper_id)?.title??'')),make('span','coverage-state',item.status==='addressed'?'已引用原文':'证据不足'),make('p',null,item.summary));coverage.append(row);}assistant.append(coverage);}
     const foot=make('div','answer-footer');const sources=make('button',null,turn.sources.length+' 处原文引用');sources.addEventListener('click',()=>{state.sourceTurn=index;showSources(turn.sources);readerTab('sources');openEvidence();});foot.append(sources);
@@ -213,16 +205,18 @@ async function sendQuestion(){
   if(Array.from(question).length>12000){notice('问题最多 12000 字。',true);return;}
   clearNotice();busy(true);
   activity.reset({running:true,question});
+  let preview;
   try{
     await ensureSession();
     const pending=make('article','message user pending-question');pending.append(make('div','message-heading','你'),make('div','message-text',question));$('messages').append(pending);$('welcome').hidden=true;$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
+    preview=new AnswerPreview($('messages'),$('chat-scroll'));
     const headers={'Content-Type':'application/json','X-AsterCite-Request':'1','X-AsterCite-Session':state.active.token};if(state.accessToken)headers.Authorization='Bearer '+state.accessToken;
     const response=await fetch('/api/sessions/'+state.active.id+'/question/stream',{method:'POST',headers,body:JSON.stringify({question})});
     if(response.status===401)$('access-dialog').showModal();
-    const view=await readQuestionStream(response,event=>{if(event.context){state.context=event.context;renderSessionPanels();}activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});});applyView(view);activity.finish();$('question').value='';
+    const view=await readQuestionStream(response,event=>{if(event.context){state.context=event.context;renderSessionPanels();}activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});},update=>preview.update(update));applyView(view);activity.finish();$('question').value='';
     state.active.label=state.turns[0]?.question.slice(0,32)||'新对话';persist();renderSessions();
     if(state.turns.at(-1)?.status!=='completed')notice('本轮未完成，请检查模型服务。已发生的请求计入会话用量。',true);
-  }catch(e){activity.finish(false);document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{busy(false);}
+  }catch(e){activity.finish(false);if(preview?.text){preview.interrupt();document.querySelector('.pending-question')?.classList.remove('pending-question');}else document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{busy(false);}
 }
 $('question-form').addEventListener('submit',e=>{e.preventDefault();void sendQuestion();});
 $('question').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();void sendQuestion();}});

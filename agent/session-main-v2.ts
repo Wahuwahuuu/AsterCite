@@ -19,6 +19,7 @@ import { selectedTargets,coverageInstruction,validateCoverage } from "./selected
 import {abstractReadingSection,groundedGenerationMessages,withAbstractReading} from './paper-reading.ts';
 import {prepareWorkbenchAnswer,preferWorkbenchAnswer,workbenchCoverageInstruction,workbenchSystemPrompt,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer} from "./workbench-answer.ts";
 import {ContextTracker,compactionPolicy,estimateVisibleContext,type ContextView} from './workbench-context.ts';
+import {AnswerStreamer,type AnswerUpdate} from './answer-stream.ts';
 
 // Versioned main controls; historical prepared/session implementations remain frozen.
 
@@ -62,6 +63,7 @@ export interface MainHarnessOptions {
   thinkingLevel?: import("./config.ts").ThinkingLevel;
   authorizeRequest?: (request: RequestRecord) => Promise<void>;
   onExecutionEvent?: (event:ExecutionEvent)=>void;
+  onAnswerUpdate?:(update:AnswerUpdate)=>void;
   selectedScopeCoverage?:boolean;
   answerPolicy?:"strict"|"workbench-v1";
   controlledSnapshot?: ControlledSnapshot;
@@ -114,6 +116,7 @@ export class MainPaperHarness {
   private dialogue: DialogueRecord[] = [];
   private compactBeforeNextTurn = false;
   private contextTracker:ContextTracker;
+  private answerStreamer:AnswerStreamer;
   private autonomousPreparation = false;
   private selectedRequired:string[]=[];
   private workbenchBest:{answer:WorkbenchAnswer;request:RequestRecord|undefined;evidence:Map<string,Chunk>}|undefined;
@@ -136,6 +139,7 @@ export class MainPaperHarness {
     this.options = options;
     this.memory = new DomainMemory(options.p2?.indexVersion ?? "unknown", options.snapshot?.domain_state);
     this.contextTracker=new ContextTracker(options.snapshot?.context_state);
+    this.answerStreamer=new AnswerStreamer(update=>options.onAnswerUpdate?.(update),options.secrets??[]);
     if (options.snapshot) {
       this.dialogue = structuredClone(options.snapshot.dialogue);
       this.finalAnswers = new Set(options.snapshot.final_signatures);
@@ -147,6 +151,11 @@ export class MainPaperHarness {
     session.subscribe((event) => {
       const ledger = this.ledger;
       if (!ledger) return;
+      if(this.workbench&&options.onAnswerUpdate&&ledger.phase==='agent'&&['generate','closing','citation_repair'].includes(ledger.stage)){
+        const partial=event.type==='message_update'&&event.assistantMessageEvent.type==='text_delta'?event.assistantMessageEvent.partial:event.type==='message_end'&&event.message.role==='assistant'?event.message:undefined;
+        const request=ledger.record.requests.at(-1);
+        if(partial&&request)this.answerStreamer.update(request.request_id,partial.content.filter(block=>block.type==='text').map(block=>block.text).join('\n'),[...this.lastMainEvidence.keys()],event.type==='message_end');
+      }
       if (event.type === "agent_settled") ledger.record.agent_settled = true;
       if (event.type === "message_end" && event.message.role === "assistant") {
         this.answer = event.message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");

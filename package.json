@@ -18,7 +18,8 @@
     "audit": "python -X utf8 scripts/audit_public.py",
     "web": "node agent/web-server.ts",
     "start": "node desktop/local-app.ts",
-    "web:build": "node scripts/build-web.ts"
+    "web:build": "node scripts/build-web.ts",
+    "web:vendor": "node scripts/sync-web-renderer.ts"
   },
   "engines": {
     "node": ">=24.11.1"
@@ -31,6 +32,9 @@
   },
   "devDependencies": {
     "@types/node": "24.10.1",
+    "dompurify": "3.4.17",
+    "katex": "0.19.1",
+    "marked": "18.1.2",
     "pdfjs-dist": "6.4.299",
     "typescript": "5.9.3"
   },

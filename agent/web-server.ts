@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {readFileSync} from 'node:fs';
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -38,7 +39,15 @@ const STATIC_FILES:Record<string,{file:string;type:string}>={
   ,"/trace-inspector.js":{file:"trace-inspector.js",type:"text/javascript; charset=utf-8"}
   ,"/trace.css":{file:"trace.css",type:"text/css; charset=utf-8"}
   ,"/session-panel.js":{file:"session-panel.js",type:"text/javascript; charset=utf-8"}
+  ,"/markdown.js":{file:"markdown.js",type:"text/javascript; charset=utf-8"}
+  ,"/answer-preview.js":{file:"answer-preview.js",type:"text/javascript; charset=utf-8"}
 };
+const rendererAssets=JSON.parse(readFileSync(new URL('../web/vendor/render-assets.json',import.meta.url),'utf8')) as {files:string[]};
+for(const name of rendererAssets.files){
+  if(!/^(?:fonts\/)?[A-Za-z0-9_.-]+$/u.test(name))throw new Error('Invalid renderer asset');
+  const type=/\.(?:m?js)$/u.test(name)?'text/javascript; charset=utf-8':name.endsWith('.css')?'text/css; charset=utf-8':name.endsWith('.woff2')?'font/woff2':name.endsWith('.woff')?'font/woff':name.endsWith('.ttf')?'font/ttf':'text/plain; charset=utf-8';
+  STATIC_FILES['/vendor/'+name]={file:'vendor/'+name,type};
+}
 const safeEqual=(a:string,b:string)=>timingSafeEqual(Buffer.from(sha(a),"hex"),Buffer.from(sha(b),"hex"));
 function failure(code:string):{status:number;message:string}{
   const known:Record<string,{status:number;message:string}>={
@@ -59,7 +68,7 @@ function failure(code:string):{status:number;message:string}{
 }
 function headers(res:ServerResponse){
   res.setHeader("X-Content-Type-Options","nosniff");res.setHeader("Referrer-Policy","no-referrer");
-  res.setHeader("Content-Security-Policy","default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  res.setHeader("Content-Security-Policy","default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   res.setHeader("Cache-Control","no-store");
 }
 function json(res:ServerResponse,status:number,value:unknown){res.writeHead(status,{"Content-Type":"application/json; charset=utf-8"});res.end(JSON.stringify(value));}
@@ -165,7 +174,7 @@ export async function createWebServer(options:WebServerOptions){
           res.writeHead(200,{"Content-Type":"application/x-ndjson; charset=utf-8","X-Accel-Buffering":"no"});res.setTimeout(0);
           const send=(value:unknown)=>{if(!res.destroyed&&!res.writableEnded)res.write(JSON.stringify(value)+"\n");};
           send({type:"ready"});heartbeat=setInterval(()=>send({type:"heartbeat"}),10000);heartbeat.unref();
-          const value=await session.ask(input.question as string,event=>send({type:"activity",event}));
+          const value=await session.ask(input.question as string,event=>send({type:"activity",event}),update=>send({type:'answer',update}));
           send({type:"result",view:value});res.end();return;
         }
         const value=action==="ask"?await session.ask(input.question as string):action==="settings"?await session.configure(input.scope as string[],input.compact as boolean):await session.view();

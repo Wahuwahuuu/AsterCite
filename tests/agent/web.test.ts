@@ -138,7 +138,7 @@ test("website adapter runs the existing Harness, saves citations and restores me
     await assert.rejects(session.configure(["not-in-corpus"],false),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_SCOPE");
     await assert.rejects(session.configure(["p1"],true),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_CONFIG");
     const events:WebActivity[]=[];
-    const first=await session.ask("p1 requested fact "+key,event=>events.push(event));assert.equal(first.turns[0].status,"completed");assert.ok(!JSON.stringify(first).includes(key));
+    const streamed:string[]=[];const first=await session.ask("p1 requested fact "+key,event=>events.push(event),update=>{assert.ok(update.sources.some(source=>source.chunk_id===seed.chunks[0].chunk_id));streamed.push(update.text);});assert.equal(first.turns[0].status,"completed");assert.ok(!JSON.stringify(first).includes(key));assert.equal(streamed.at(-1),first.turns[0].answer);
     assert.ok(events.some(e=>e.kind==="model"&&e.status==="running"));
     assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.status==="completed"));
     assert.equal(events.at(-1)?.kind,"memory");assert.equal(events.at(-1)?.status,"completed");
