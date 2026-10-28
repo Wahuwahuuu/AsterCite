@@ -9,8 +9,8 @@ import type { R2Check } from "./p2-r2.ts";
 export type Audit = (kind: string) => void;
 
 /** A single complete terminal object only; arbitrary prose is never turned into an answer. */
-export function decodeCandidateJSON(response: string, audit: Audit = () => {}): string {
-  if (Array.from(response).length > 16000) throw new Error("JSON response exceeds the declared visible-text bound");
+export function decodeCandidateJSON(response: string, audit: Audit = () => {},maximum=16000): string {
+  if (Array.from(response).length > maximum) throw new Error("JSON response exceeds the declared visible-text bound");
   let text = response.trim();
   const fence = /^```(?:json)?\s*\n([\s\S]*?)\n```$/iu.exec(text);
   if (fence) text = fence[1].trim();

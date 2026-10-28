@@ -19,6 +19,7 @@ export interface ControlledSnapshot {
   state: SessionSnapshot;
 }
 export interface ControlledTurnRecord extends PreparedTurnRecord {
+  answer_policy?:'workbench-v1';
   runtime_controls: RuntimeControls & { auto_compaction_enabled: boolean };
   reliability_adaptations: Array<{ stage: string; request_id: string | null; kind: string; original_response: string }>;
 }

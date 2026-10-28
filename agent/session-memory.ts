@@ -6,6 +6,7 @@ export const MEMORY_EXTENSION = "<inline:pipaper-safe-compaction>";
 export interface SessionSnapshot {
   version: 1; profile: "A" | "B"; index_version: string; entries: FileEntry[];
   domain_state: DomainState; dialogue: DialogueRecord[]; final_signatures: string[];
+  answer_policy?:'workbench-v1';
 }
 
 /** This explicit extension adds no tools, commands, providers or discovery. */

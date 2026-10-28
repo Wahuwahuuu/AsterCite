@@ -9,6 +9,12 @@ export interface ToolContext {
   getLedger(): TurnLedger;
   getScope(): readonly string[];
   p2?: P2HarnessConfig;
+  recoverToolErrors?:boolean;
+}
+
+function failTool(ctx:ToolContext,ledger:TurnLedger,error:unknown):void{
+  const recoverable=!(error instanceof RuntimeFailure)||['TOOL_ERROR','WORKER_ERROR','WORKER_TIMEOUT','RETRIEVAL_ERROR','INTERNAL_ERROR','QUERY_TOO_LONG','MODEL_OOM','WORKER_EXIT','WORKER_CLOSED','WORKER_WRITE_ERROR'].includes(error.code);
+  if(!ctx.recoverToolErrors||!recoverable)ledger.fail(error instanceof RuntimeFailure?error.code:'TOOL_ERROR',error);
 }
 
 function query(text: string): void {
@@ -119,7 +125,7 @@ export function createPaperTools(worker: WorkerTransport, ctx: ToolContext): Too
       } catch (error) {
         entry.status = "error";
         entry.error = ledger.errorText(error);
-        ledger.fail(error instanceof RuntimeFailure ? error.code : "TOOL_ERROR", error);
+        failTool(ctx,ledger,error);
         throw error;
       } finally { entry.elapsed_ms = Date.now() - started; }
     },
@@ -155,7 +161,7 @@ export function createPaperTools(worker: WorkerTransport, ctx: ToolContext): Too
       } catch (error) {
         entry.status = "error";
         entry.error = ledger.errorText(error);
-        ledger.fail(error instanceof RuntimeFailure ? error.code : "TOOL_ERROR", error);
+        failTool(ctx,ledger,error);
         throw error;
       } finally { entry.elapsed_ms = Date.now() - started; }
     },

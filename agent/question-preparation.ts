@@ -18,6 +18,7 @@ export interface PreparationContext {
   original: string; allowed: ReadonlySet<string>; publicPapers: readonly Paper[]; frameId: string;
   history: readonly DialogueRecord[]; activeConstraints: readonly UserConstraint[];
   priorObjects?: { targets: readonly string[]; comparison_dimensions: readonly string[] };
+  preferResolvedPaper?:boolean;
 }
 export interface PreparedQuestion {
   frame: FullFrame; rewrite: string; warnings: string[]; wrapper: "none" | "preparation";
@@ -90,6 +91,13 @@ export function parseQuestionPreparation(response: string, context: PreparationC
     // only fill a missing object; they must not force every mentioned paper into scope.
     if (!targets.length && explicit.length > 4) fail("targets", "at most four current explicit objects; use autonomous scoped discovery for larger lists");
     if (!targets.length && explicit.length) { targets = explicit; warnings.push("explicit_targets_used"); }
+    const paperReference=/这篇|那篇|该论文|该篇|上述论文|同一篇|\b(?:this|that|the same) paper\b/iu;
+    const clarification=raw.clarification as {reference_quote?:unknown}|undefined;
+    if(context.preferResolvedPaper&&!targets.length&&paperReference.test(context.original)&&intent!=='comparison'&&(!clarification||typeof clarification.reference_quote==='string'&&paperReference.test(clarification.reference_quote))){
+      const prior=context.priorObjects?.targets.filter(id=>context.allowed.has(id))??[];
+      const resolved=prior.length===1?prior:context.allowed.size===1?[...context.allowed]:[];
+      if(resolved.length===1){targets=resolved;warnings.push('resolved_paper_reference_retained');}
+    }
     if(conversational)targets=[];
     const rewrite = raw.rewrite === undefined ? context.original : text(raw.rewrite, "rewrite", 12000);
     if (raw.rewrite === undefined) warnings.push("rewrite_defaulted_to_original");

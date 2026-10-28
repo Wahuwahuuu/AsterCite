@@ -33,6 +33,7 @@
   "agent/web-server.ts",
   "agent/web-session.ts",
   "agent/worker-client.ts",
+  "agent/workbench-answer.ts",
   "configs/model.example.json",
   "data/full-v1/manifests/corpus.json",
   "data/full-v1/manifests/source.json",

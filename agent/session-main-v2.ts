@@ -16,6 +16,7 @@ import { preparedPipelineTrace, type PreparedTurnRecord } from "./pipeline-trace
 import { QUESTION_PREPARATION_INSTRUCTION, PREPARATION_VERSION, parseQuestionPreparation, preparationPayload, rawQuestionFrame, type PreparationContext, type PreparationRecord } from "./question-preparation.ts";
 import { traceInput,traceOutput,traceArguments,type ExecutionEvent } from "./execution-trace.ts";
 import { selectedTargets,coverageInstruction,validateCoverage } from "./selected-scope.ts";
+import {prepareWorkbenchAnswer,preferWorkbenchAnswer,workbenchCoverageInstruction,workbenchSystemPrompt,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer} from "./workbench-answer.ts";
 
 // Versioned main controls; historical prepared/session implementations remain frozen.
 
@@ -60,6 +61,7 @@ export interface MainHarnessOptions {
   authorizeRequest?: (request: RequestRecord) => Promise<void>;
   onExecutionEvent?: (event:ExecutionEvent)=>void;
   selectedScopeCoverage?:boolean;
+  answerPolicy?:"strict"|"workbench-v1";
   controlledSnapshot?: ControlledSnapshot;
   cwd: string;
   worker: WorkerTransport;
@@ -111,6 +113,8 @@ export class MainPaperHarness {
   private compactBeforeNextTurn = false;
   private autonomousPreparation = false;
   private selectedRequired:string[]=[];
+  private workbenchBest:{answer:WorkbenchAnswer;request:RequestRecord|undefined;evidence:Map<string,Chunk>}|undefined;
+  private workbenchTruncated=false;
   private trace(event:ExecutionEvent):void{try{this.options.onExecutionEvent?.(JSON.parse(redactText(JSON.stringify(event),this.options.secrets)));}catch{/* Observation must never change inference. */}}
   private autonomousEvidenceBefore = new Set<string>();
   private preparation: PreparationRecord = { version: PREPARATION_VERSION, status: "skipped", request_id: null, reason: "No user turn", result: null };
@@ -119,6 +123,9 @@ export class MainPaperHarness {
   private get useReflect(): boolean { return !this.full || this.options.p2?.reflect !== false; }
   private get full(): boolean { return this.options.p2?.executionVersion === "full-v1"; }
   private get r2(): boolean { return this.options.p2?.executionVersion === "r2" || this.full; }
+  private get workbench():boolean{return this.full&&this.options.answerPolicy==='workbench-v1';}
+  private get finalInstruction():string{return this.workbench?WORKBENCH_ANSWER_INSTRUCTION:FINAL_ANSWER_INSTRUCTION;}
+  private retainedWorkbenchAnswer(){return this.workbenchBest;}
 
   private constructor(session: AgentSession, settings: SettingsManager, options: MainHarnessOptions) {
     this.session = session;
@@ -145,7 +152,7 @@ export class MainPaperHarness {
           const entry = ledger.beginTool(event.toolName, event.toolCallId, "start");
           if(this.options.onExecutionEvent&&TOOL_NAMES.includes(event.toolName as typeof TOOL_NAMES[number]))this.trace({id:event.toolCallId,kind:"tool",status:"running",stage:ledger.stage,phase:ledger.phase,parent_id:ledger.record.requests.at(-1)?.request_id,origin:"model",tool:event.toolName as typeof TOOL_NAMES[number],input:traceArguments(event.args)});
           if (this.r2) entry.execution_source = "model";
-          if (options.p2 && ledger.closing) { ledger.rejectTool(event.toolCallId, new Error("Model requested a tool while retrieval was closed")); ledger.fail("PROTOCOL_ERROR", new Error("Model requested a tool while retrieval was closed")); }
+          if (options.p2 && ledger.closing) { ledger.rejectTool(event.toolCallId, new Error("Model requested a tool while retrieval was closed")); if(!this.workbench)ledger.fail("PROTOCOL_ERROR", new Error("Model requested a tool while retrieval was closed")); }
           else if (options.p2 && ledger.toolCount(event.toolName) >= ledger.toolLimit(event.toolName)) {
             entry.status = "budget_rejected"; entry.executed = false; entry.error = `${event.toolName} tool budget exhausted`;
           }
@@ -164,7 +171,7 @@ export class MainPaperHarness {
         ledger.endTool(event.toolCallId, event.isError);
         const tool = ledger.record.tools.findLast((entry) => entry.tool_call_id === event.toolCallId);
         if(this.options.onExecutionEvent&&TOOL_NAMES.includes(event.toolName as typeof TOOL_NAMES[number]))this.trace({id:event.toolCallId,kind:"tool",status:event.isError?"error":"completed",stage:ledger.stage,phase:ledger.phase,parent_id:tool?.model_request_id??ledger.record.requests.at(-1)?.request_id,origin:"model",tool:event.toolName as typeof TOOL_NAMES[number],output:traceOutput(event.result,this.options.secrets),elapsed_ms:tool?.elapsed_ms});
-        if (event.isError && (!options.p2 || (tool?.status !== "budget_rejected" && tool?.status !== "rejected"))) ledger.fail("TOOL_ERROR", new Error("Pi tool execution failed"));
+        if (event.isError && (!options.p2 || (tool?.status !== "budget_rejected" && tool?.status !== "rejected"))&&!this.workbench) ledger.fail("TOOL_ERROR", new Error("Pi tool execution failed"));
         else if (event.toolName === "retrieve_chunks") {
           const details = event.result.details as RetrieveResult | undefined;
           for (const chunk of details?.chunks ?? []) this.delivered.set(chunk.chunk_id, { paper_id: chunk.paper_id, start: chunk.start, end: chunk.end });
@@ -179,6 +186,7 @@ export class MainPaperHarness {
 
   static async create(options: MainHarnessOptions): Promise<MainPaperHarness> {
     const controls = parseRuntimeControls(options.controls);
+    if(options.answerPolicy!==undefined&&!['strict','workbench-v1'].includes(options.answerPolicy))throw new RuntimeFailure('INVALID_CONFIG','Unknown answer policy');
     if (options.snapshot) throw new RuntimeFailure("INVALID_SNAPSHOT", "Use a component-bound controlledSnapshot, not a raw snapshot");
     if (options.p2?.profile !== (controls.arm === "A" ? "A" : "B") || Boolean(options.p2.reflect) !== controls.reflect) throw new RuntimeFailure("INVALID_CONFIG", "External arm/Reflect differs from the internal configuration");
     if (options.controlledSnapshot) options = { ...options, snapshot: unwrapSnapshot(options.controlledSnapshot, controls, options.p2!.indexVersion) };
@@ -187,6 +195,7 @@ export class MainPaperHarness {
       throw new RuntimeFailure("INVALID_CONFIG", "C requires light-v1 and structured Memory; A remains autonomous");
     }
     if (options.snapshot) {
+      if((options.snapshot.answer_policy??'strict')!==(options.answerPolicy??'strict'))throw new RuntimeFailure('INVALID_SNAPSHOT','Answer policy differs from the saved session');
       if (options.p2?.executionVersion !== "full-v1") throw new RuntimeFailure("INVALID_SNAPSHOT", "Snapshots require the full-v1 runtime");
       options = { ...options, snapshot: restoreSnapshot(options.snapshot, options.p2).snapshot };
     }
@@ -208,11 +217,11 @@ export class MainPaperHarness {
     const { session, extensionsResult } = await createAgentSession({ cwd, agentDir: join(cwd, ".runtime", "pi"),
       model: options.model, thinkingLevel: options.model.reasoning ? options.thinkingLevel ?? "low" : "off", modelRuntime: options.modelRuntime,
       settingsManager: settings, sessionManager: SessionManager.inMemory(cwd, undefined, options.snapshot?.entries),
-      resourceLoader: isolatedResources(options.p2?.commonPrompt ?? (options.p2 ? P2_COMMON_PROMPT : SYSTEM_PROMPT),
+      resourceLoader: isolatedResources(options.answerPolicy==='workbench-v1'?workbenchSystemPrompt(options.p2?.commonPrompt??P2_COMMON_PROMPT):options.p2?.commonPrompt ?? (options.p2 ? P2_COMMON_PROMPT : SYSTEM_PROMPT),
         options.p2?.executionVersion === "full-v1" ? [nativeMemoryExtension(() => getHarness().memory.summary(getHarness().dialogue, getHarness().useDomainMemory))] : []),
       tools: [...TOOL_NAMES], excludeTools: ["mcp__*"], customTools: createPaperTools(options.worker, {
         knownPaperIds: options.knownPaperIds, getLedger: () => getHarness().activeLedger(), getScope: () => getHarness().scope,
-        ...(options.p2 ? { p2: options.p2 } : {}),
+        ...(options.p2 ? { p2: options.p2 } : {}),recoverToolErrors:options.answerPolicy==='workbench-v1',
       }),
     });
     if (extensionsResult.errors.length || extensionsResult.extensions.some((extension) => extension.path !== MEMORY_EXTENSION || options.p2?.executionVersion !== "full-v1" ||
@@ -337,7 +346,7 @@ export class MainPaperHarness {
       if (ledger.requestCount >= ledger.maxRequests - 1 && !["generate", "closing", "citation_repair"].includes(ledger.stage)) {
         this.enterClosing("Exploration request allowance exhausted");
       }
-      const instruction = this.stageInstruction()+"\n"+coverageInstruction(this.selectedRequired,this.options.p2?.publicPapers??[]);
+      const instruction = this.stageInstruction()+"\n"+(this.workbench?workbenchCoverageInstruction:coverageInstruction)(this.selectedRequired,this.options.p2?.publicPapers??[]);
       const memory = this.useDomainMemory ? [{ role: "system" as const, content: JSON.stringify(this.memory.projection()), timestamp: Date.now() }] : [];
       const projected = [...context.messages, ...memory, ...(instruction ? [{ role: "system" as const, content: instruction, timestamp: Date.now() }] : [])];
       return { ...previous, context: { ...context, tools: this.session.agent.state.tools.slice(),
@@ -351,7 +360,7 @@ export class MainPaperHarness {
       const id = context.toolCall.id;
       if (ledger.closing) {
         const error = new RuntimeFailure("PROTOCOL_ERROR", "Model requested a tool while retrieval was closed");
-        ledger.rejectTool(id, error); ledger.fail(error.code, error);
+        ledger.rejectTool(id, error); if(!this.workbench)ledger.fail(error.code, error);
         return { block: true, reason: error.message };
       }
       try {
@@ -375,8 +384,14 @@ export class MainPaperHarness {
       if (ledger.mustStop || previous?.action === "end" || ["error", "aborted"].includes(turn.message.stopReason)) return { action: "end" };
       const toolCalls = turn.message.content.filter((block) => block.type === "toolCall");
       const output = turn.message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+      this.workbenchTruncated=turn.message.stopReason==='length';
       if (["generate", "closing", "citation_repair"].includes(ledger.stage)) {
-        if (toolCalls.length) { ledger.fail("PROTOCOL_ERROR", new Error("Model requested tools during final generation")); return { action: "end" }; }
+        if (toolCalls.length) {
+          if(this.workbench&&citationIds(output).some(id=>this.lastMainEvidence.has(id)))return this.finishFullAnswer(output);
+          if(this.workbench&&!this.generationRepair&&ledger.remainingRequests>=1){this.generationRepair={original:output,error:'Retrieval is closed. Finish with the current excerpts or clearly describe the gap; do not request tools.',code:'PROTOCOL_ERROR'};this.enterClosing('Finish the visible answer without another tool call','citation_repair');return {action:'continue'};}
+          if(this.workbench&&this.workbenchBest)return this.acceptWorkbenchAnswer();
+          ledger.fail("PROTOCOL_ERROR", new Error("Model requested tools during final generation")); return { action: "end" };
+        }
         return this.finishAnswer(output);
       }
       if (this.options.p2?.profile === "B") {
@@ -447,6 +462,7 @@ export class MainPaperHarness {
     const ledger = this.activeLedger();
     ledger.record.final_request_id = this.lastMainRequest?.request_id ?? null;
     try {
+      if(this.workbench)return this.finishWorkbenchAnswer(output);
       let parseOutput=output;
       const rawSelected=this.selectedRequired.length?stageObject(output):undefined;
       if(rawSelected){const {paper_coverage:_coverage,...ordinary}=rawSelected;parseOutput=JSON.stringify(ordinary);}
@@ -466,6 +482,7 @@ export class MainPaperHarness {
       const code = error instanceof RuntimeFailure ? error.code : "ANSWER_SCHEMA_ERROR";
       const detail = ledger.errorText(error);
       (ledger.record.generation_failures ??= []).push({ code, error: detail, response_text: Array.from(output).slice(0, 16000).join(""), request_id: this.lastMainRequest?.request_id ?? null });
+      if(this.workbench&&this.workbenchBest)return this.acceptWorkbenchAnswer();
       if (!this.generationRepair && ledger.remainingRequests >= 1) {
         this.generationRepair = { original: output, error: detail, code };
         this.enterClosing("Final answer requires one bounded schema/citation correction", "citation_repair");
@@ -476,21 +493,46 @@ export class MainPaperHarness {
     }
   }
 
+  private finishWorkbenchAnswer(output:string):AgentTurnDecision{
+    const ledger=this.activeLedger(),intent=(this.frame as FullFrame|undefined)?.intent;
+    const expectedKind=intent&&!this.autonomousPreparation?intent==='session_control'?'session_control':intent==='paper_discovery'?'catalog':'paper_fact':undefined;
+    const candidate=prepareWorkbenchAnswer(output,{evidence:this.lastMainEvidence,expectedKind,
+      allowAnswer:!this.check?.checks.some(need=>need.status!=='supported'),requiredPapers:this.selectedRequired,papers:this.options.p2?.publicPapers,truncated:this.workbenchTruncated});
+    if(!candidate)throw new RuntimeFailure('ANSWER_SCHEMA_ERROR','The model returned no readable answer text');
+    const chosen=preferWorkbenchAnswer(this.workbenchBest?.answer,candidate);
+    if(chosen===candidate)this.workbenchBest={answer:candidate,request:this.lastMainRequest,evidence:new Map(this.lastMainEvidence)};
+    for(const kind of candidate.adaptations)this.audit('final_answer',output)(kind);
+    if(candidate.needsCitationRepair&&!this.generationRepair&&ledger.remainingRequests>=1){
+      const error='Some citations are not linked to visible excerpts. Preserve the useful answer, use only actual visible [cite:chunk_id] markers, or state the evidence gap without inventing support.';
+      (ledger.record.generation_failures??=[]).push({code:'INVALID_CITATION',error,response_text:Array.from(output).slice(0,16000).join(''),request_id:this.lastMainRequest?.request_id??null});
+      this.generationRepair={original:output,error,code:'INVALID_CITATION'};this.enterClosing('One source-link correction; an existing answer is retained','citation_repair');return {action:'continue'};
+    }
+    return this.acceptWorkbenchAnswer();
+  }
+
+  private acceptWorkbenchAnswer():AgentTurnDecision{
+    const best=this.workbenchBest!;const ledger=this.activeLedger();this.lastMainRequest=best.request;this.lastMainEvidence=new Map(best.evidence);
+    ledger.record.final_request_id=best.request?.request_id??null;ledger.record.final_structure=best.answer.value;ledger.record.business_status=best.answer.value.status;
+    this.answer=best.answer.value.answer;ledger.record.citation_validity=this.citations(this.answer,best.request);
+    if(this.generationRepair)ledger.record.citation_corrections!.push({original_answer:this.generationRepair.original,corrected_answer:this.answer,request_id:best.request?.request_id??null});
+    return {action:'end'};
+  }
+
   private stageInstruction(): string {
     const ledger = this.activeLedger();
-    if (this.generationRepair) return `${FINAL_ANSWER_INSTRUCTION}\nOne final correction only. ${this.generationRepair.error}\nAllowed citation IDs: ${JSON.stringify([...this.lastMainEvidence.keys()])}. Original failed response: ${this.generationRepair.original}\nDo not retrieve or invent support. Supported factual answer/partial must cite visible evidence. If support is unavailable, withdraw unsupported claims and give a clear refusal or necessary clarification; these do not need fabricated citations.`;
+    if (this.generationRepair) return `${this.finalInstruction}\nOne final correction only. ${this.generationRepair.error}\nAllowed citation IDs: ${JSON.stringify([...this.lastMainEvidence.keys()])}. Original failed response: ${this.generationRepair.original}\nDo not retrieve or invent support. Supported factual answer/partial must cite visible evidence. If support is unavailable, withdraw unsupported claims and give a clear refusal or necessary clarification; these do not need fabricated citations.`;
     if (this.citationRepair) return `Host citation correction, one attempt only. Do not retrieve or delete citations to conceal an invalid answer.
 Correct only citation format/source availability using the actually visible excerpts. Invalid IDs: ${JSON.stringify(this.citationRepair.invalid)}.
 Available copyable citations: ${JSON.stringify([...this.validEvidenceProof(this.lastMainRequest?.tool_context ?? [])].map((id) => `[${this.r2 ? "cite:" : ""}${id}]`))}.
 Original candidate answer: ${this.citationRepair.original}`;
-    if (ledger.closing) return `${this.full && this.options.p2?.answerContract === "full-v1-json" ? FINAL_ANSWER_INSTRUCTION : ""}\nHost stage ${ledger.stage}: retrieval is closed. Answer or clarify using only actually visible excerpts and real dialogue. State bounded evidence insufficiency when needed. Do not request tools. ${this.frame ? `QuestionFrame (fallible model parsing): ${JSON.stringify(this.frame)}. If its real ambiguity is unresolved, ask for clarification.` : ""} ${this.check ? `EvidenceCheck (fallible model assessment): ${JSON.stringify(this.check)}` : ""}
+    if (ledger.closing) return `${this.full && this.options.p2?.answerContract === "full-v1-json" ? this.finalInstruction : ""}\nHost stage ${ledger.stage}: retrieval is closed. Answer or clarify using only actually visible excerpts and real dialogue. State bounded evidence insufficiency when needed. Do not request tools. ${this.frame ? `QuestionFrame (fallible model parsing): ${JSON.stringify(this.frame)}. If its real ambiguity is unresolved, ask for clarification.` : ""} ${this.check ? `EvidenceCheck (fallible model assessment): ${JSON.stringify(this.check)}` : ""}
 ${(this.frame as FullFrame | undefined)?.intent === "session_control" ? 'Use answer_kind="session_control"; respond naturally to greetings, thanks, workbench usage questions or actual user session instructions. No paper findings or paper citations are required.' : (this.frame as FullFrame | undefined)?.intent === "paper_discovery" ? `Use answer_kind="catalog"; locate only these actual public catalog entries. No paper findings. ${JSON.stringify(this.options.p2!.publicPapers.filter((paper) => this.allowed().has(paper.paper_id)).map(({paper_id,title}) => ({paper_id,title})))}` : ""}
 ${this.r2 && this.options.p2?.profile === "B" && this.check?.checks.some((need) => need.status !== "supported") ? "Unresolved needs remain: do not publish a complete affirmative answer. Provide only supported partial facts and explicitly identify missing facts and the scope/budget of this retrieval. Not found in these excerpts is not proof that the paper has no answer." : ""}`;
-    if (this.full && (!this.useNlu || this.autonomousPreparation) && this.frame) return `${FINAL_ANSWER_INSTRUCTION}\nQuestion preparation uses autonomous retrieval (${this.preparation.status === "fallback" ? "one invalid preparation retained" : "target discovery required"}). Interpret the complete ORIGINAL question and actual dialogue through the two domain tools. Obtain source evidence for factual answers; the host will Reflect after retrieval. Preparation is fallible and cannot replace the original question. ${this.preparation.result ? `Query suggestions: ${JSON.stringify({ rewrite: this.preparation.result.rewrite, frame: this.frame })}.` : ""} You may directly finish a catalog/session_control request of that explicit answer_kind without paper research claims.`;
+    if (this.full && (!this.useNlu || this.autonomousPreparation) && this.frame) return `${this.finalInstruction}\nQuestion preparation uses autonomous retrieval (${this.preparation.status === "fallback" ? "one invalid preparation retained" : "target discovery required"}). Interpret the complete ORIGINAL question and actual dialogue through the two domain tools. Obtain source evidence for factual answers; the host will Reflect after retrieval. Preparation is fallible and cannot replace the original question. ${this.preparation.result ? `Query suggestions: ${JSON.stringify({ rewrite: this.preparation.result.rewrite, frame: this.frame })}.` : ""} You may directly finish a catalog/session_control request of that explicit answer_kind without paper research claims.`;
     if (this.frame) return `Host stage ${ledger.stage}. QuestionFrame (fallible model parsing): ${JSON.stringify(this.frame)}.
 ${this.check ? `Previous EvidenceCheck: ${JSON.stringify(this.check)}.` : ""}
 Complete this retrieval batch through the declared tools. If separate queries are needed, issue up to two retrieve_chunks calls together. Do not publish a final answer before the host evidence check.`;
-    return this.full && this.options.p2?.answerContract === "full-v1-json" ? FINAL_ANSWER_INSTRUCTION : "";
+    return this.full && this.options.p2?.answerContract === "full-v1-json" ? this.finalInstruction : "";
   }
 
   private r2Evidence(context = normalizeContext({ messages: convertToLlm(this.session.messages) })): Map<string, Chunk> {
@@ -531,6 +573,12 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       if(this.options.onExecutionEvent)this.trace({id,kind:"tool",status:outcome.isError?"error":"completed",stage,phase:ledger.phase,parent_id:planRequestId,origin:"host_plan",tool:"retrieve_chunks",output:traceOutput(outcome.result,this.options.secrets),elapsed_ms:Date.now()-toolStarted});
       if (outcome.isError) {
         if (entry.status === "budget_rejected" || entry.status === "rejected") continue;
+        if(this.workbench&&!ledger.mustStop){
+          const errorText=outcome.result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n');
+          this.audit(stage,errorText)('individual_retrieval_failure_retained');
+          await this.session.sendCustomMessage({customType:'pipaper_host_tool_error',content:`Retrieval for ${JSON.stringify(query.paper_ids)} failed. This supplies no paper evidence. Use other successful excerpts if any, and explain the remaining gap.`,display:false},{triggerTurn:false});
+          continue;
+        }
         throw new RuntimeFailure(ledger.failureCode ?? "TOOL_ERROR", "Host planned tool execution failed");
       }
       if (ledger.mustStop) throw new RuntimeFailure(ledger.failureCode ?? "TOOL_ERROR", "Host planned tool execution failed");
@@ -597,10 +645,10 @@ Complete this retrieval batch through the declared tools. If separate queries ar
   private async runPreparedB(signal?: AbortSignal): Promise<void> {
     const ledger = this.activeLedger(), oldPhase = ledger.phase, oldStage = ledger.stage;
     // A preparation call cannot consume the reserved Reflect/Generate requests.
-    if (ledger.mustStop || ledger.remainingRequests < (this.useReflect ? 3 : 2)) throw new RuntimeFailure("BUDGET_EXCEEDED", "C must reserve its configured closing requests");
+    if (ledger.mustStop || ledger.remainingRequests < (this.useReflect&&!this.workbench ? 3 : 2)) throw new RuntimeFailure("BUDGET_EXCEEDED", "C must reserve its configured closing requests");
     const context: PreparationContext = { original: this.input, allowed: this.allowed(), publicPapers: this.options.p2!.publicPapers,
       frameId: `${ledger.record.user_turn_id}/question_preparation`, history: this.dialogue.filter(turn => turn.turn_id !== ledger.record.user_turn_id),
-      activeConstraints: this.memory.activeConstraints(), priorObjects: { targets: this.memory.state.comparison_order.length ? this.memory.state.comparison_order : this.memory.state.current_paper ? [this.memory.state.current_paper.paper_id] : [], comparison_dimensions: this.memory.state.comparison_dimensions } };
+      activeConstraints: this.memory.activeConstraints(),preferResolvedPaper:this.workbench, priorObjects: { targets: this.memory.state.comparison_order.length ? this.memory.state.comparison_order : this.memory.state.current_paper ? [this.memory.state.current_paper.paper_id] : [], comparison_dimensions: this.memory.state.comparison_dimensions } };
     const summaries = this.session.sessionManager.getBranch().filter(entry => entry.type === "compaction");
     const nativeSummary = summaries.at(-1);
     try {
@@ -678,15 +726,24 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       }
     }
     if (!this.useReflect) { this.enterClosing("Reflect disabled by C component control; no host supplement", "generate"); return; }
-    if (ledger.remainingRequests < 2) throw new RuntimeFailure("BUDGET_EXCEEDED", "B must reserve Reflect and Generate");
-    this.check = await this.r2Check("evidence_check", signal);
-    if (this.check.next_action === "retrieve_more" && ledger.remainingRequests >= 2 && ledger.toolCount("retrieve_chunks") < 4) {
-      this.supplementUsed = true;
-      const added = await this.hostBatch(this.check.next_queries, "retrieve_more", ledger.record.requests.at(-1)!.request_id, signal);
-      if (added.length) this.check = await this.r2Check("evidence_check_final", signal);
-      else { this.enterClosing("Supplement supplied no new evidence; unresolved gaps retained", "generate"); return; }
+    if (ledger.remainingRequests < 2) {
+      if(this.workbench){this.enterClosing('Optional evidence check skipped to preserve the answer request','generate');return;}
+      throw new RuntimeFailure("BUDGET_EXCEEDED", "B must reserve Reflect and Generate");
     }
-    this.enterClosing(this.check.next_action === "retrieve_more" ? "Supplement or request reserve exhausted; unresolved gaps retained" : `EvidenceCheck: ${this.check.next_action}`, "generate");
+    try{
+      this.check = await this.r2Check("evidence_check", signal);
+      if (this.check.next_action === "retrieve_more" && ledger.remainingRequests >= 2 && ledger.toolCount("retrieve_chunks") < 4) {
+        this.supplementUsed = true;
+        const added = await this.hostBatch(this.check.next_queries, "retrieve_more", ledger.record.requests.at(-1)!.request_id, signal);
+        if (added.length&&(!this.workbench||ledger.remainingRequests>=2)) this.check = await this.r2Check("evidence_check_final", signal);
+        else { this.enterClosing("Supplement supplied no new evidence or check reserve; unresolved gaps retained", "generate"); return; }
+      }
+      this.enterClosing(this.check.next_action === "retrieve_more" ? "Supplement or request reserve exhausted; unresolved gaps retained" : `EvidenceCheck: ${this.check.next_action}`, "generate");
+    }catch(error){
+      if(!this.workbench||ledger.mustStop)throw error;
+      this.audit('evidence_check',ledger.errorText(error))('optional_check_unavailable');this.check=undefined;
+      this.enterClosing('Optional check was unavailable; answer using actual visible excerpts and state gaps','generate');
+    }
   }
 
   private async structured<T>(stage: string, instruction: string, history: Message[], parse: (json: string) => T, signal?: AbortSignal): Promise<T> {
@@ -702,7 +759,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       : { original_question: this.input, allowed_papers: [...this.allowed()], public_catalog: catalog, ...(this.frame ? { question_frame: this.frame } : {}) };
     let correction = "";
     try {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < (this.workbench&&stage.startsWith('evidence_check')?1:2); attempt++) {
         // Always preserve a final generation, and avoid spending the reserved last request on auxiliary work.
         if (ledger.remainingRequests <= 1 || ledger.mustStop) throw new RuntimeFailure("BUDGET_EXCEEDED", "Auxiliary stage cannot use the final generation reserve");
         ledger.phase = "auxiliary"; ledger.stage = attempt ? `${stage}_format_repair` : stage;
@@ -747,6 +804,8 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     this.scope = [...declaredScope];
     const required=this.options.selectedScopeCoverage?selectedTargets(userText,declaredScope,this.options.p2?.publicPapers??[]):[];
     this.selectedRequired=required.length>1?required:[];
+    this.workbenchBest=undefined;
+    this.workbenchTruncated=false;
     this.answer = "";
     this.adaptations = [];
     this.input = userText; this.frame = undefined; this.check = undefined; this.supplementUsed = false; this.batchReservations = 0;
@@ -801,7 +860,11 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       await Promise.allSettled([...this.pendingRequests]);
       clearTimeout(timer); signal?.removeEventListener("abort", abort);
     }
-    const answer = this.full && ledger.failureCode ? `This turn could not complete (${ledger.failureCode}). The failure was retained; no further model request was made.` : this.answer;
+    let answer = this.full && ledger.failureCode ? `This turn could not complete (${ledger.failureCode}). The failure was retained; no further model request was made.` : this.answer;
+    if(this.workbench&&ledger.failureCode){
+      if(this.workbenchBest){this.acceptWorkbenchAnswer();answer=this.answer+'\n\n本轮在完成前中断，以上已生成内容已保留。';ledger.record.final_structure={...ledger.record.final_structure!,status:'partial',answer};ledger.record.business_status='partial';}
+      else answer=ledger.failureCode.includes('TIMEOUT')?'本轮等待超时，暂未生成完整回答，可以稍后重试。':ledger.failureCode==='CANCELLED'?'本轮已停止。':ledger.failureCode==='BUDGET_EXCEEDED'?'本轮已达到请求上限，暂未生成完整回答。':'本轮未能完成回答，执行记录已保留，可查看详情后重试。';
+    }
     const cited = this.r2 ? citationIds(answer) : [...new Set([...answer.matchAll(/\[([^\]\n]+)\]/g)].map((match) => match[1]))];
     const unknown = this.options.p2 ? this.citations(answer, this.lastMainRequest).unknown_ids
       : cited.filter((id) => !this.delivered.has(id) || (declaredScope.length && !declaredScope.includes(this.delivered.get(id)!.paper_id)));
@@ -814,8 +877,17 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       batch.new_chunk_ids = [...new Set(tools.flatMap(tool => tool.chunk_ids))].filter(id => !this.autonomousEvidenceBefore.has(id));
     }
     const result = ledger.finish(answer);
+    const accepted=this.retainedWorkbenchAnswer();
+    if(this.workbench&&accepted&&!ledger.failureCode){
+      const original=accepted.answer.original;
+      const entry=this.session.sessionManager.getBranch().findLast(entry=>entry.type==='message'&&entry.message.role==='assistant'&&entry.message.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')===original);
+      if(entry?.type==='message'&&entry.message.role==='assistant'){
+        this.session.sessionManager.appendContextEdit(entry.id,{content:[{type:'text',text:answer}]});
+        this.session.agent.state.messages=this.session.sessionManager.buildSessionProjection().messages;
+      }
+    }
     if (this.r2) {
-      const last = this.session.messages.findLast((message) => message.role === "assistant");
+      const last = this.session.messages.findLast((message) => message.role === "assistant"&&(!this.workbenchBest||message.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')===answer));
       if (last?.role === "assistant" && !ledger.failureCode && !["error", "aborted"].includes(last.stopReason)) this.finalAnswers.add(assistantSignature(last));
     }
     if (this.full) {
@@ -829,7 +901,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       if (entry) entry.final_answer = result.final_answer;
     }
     if (this.options.p2?.profile === "B" && this.preparation.status === "error" && this.preparation.request_id === null) this.preparation.reason = result.error ?? this.preparation.reason;
-    const preparedResult: ControlledTurnRecord = { ...result, runtime_controls: { ...this.options.controls, auto_compaction_enabled: this.session.autoCompactionEnabled }, reliability_adaptations: structuredClone(this.adaptations), pipeline_trace: preparedPipelineTrace(result, userText, memoryBefore, structuredClone(this.memory.state), this.preparation),
+    const preparedResult: ControlledTurnRecord = { ...result,...(this.workbench?{answer_policy:'workbench-v1' as const}:{}), runtime_controls: { ...this.options.controls, auto_compaction_enabled: this.session.autoCompactionEnabled }, reliability_adaptations: structuredClone(this.adaptations), pipeline_trace: preparedPipelineTrace(result, userText, memoryBefore, structuredClone(this.memory.state), this.preparation),
       runtime_family: "question-preparation-v1", question_preparation: structuredClone(this.preparation) };
     this.ledger = undefined;
     this.turnController = undefined; this.frame = undefined; this.check = undefined;
@@ -849,7 +921,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     if (!this.full || this.ledger) throw new RuntimeFailure("INVALID_SNAPSHOT", "Only an idle full-v1 session can be snapshotted");
     const snapshot = { version: 1 as const, profile: this.options.p2!.profile, index_version: this.options.p2!.indexVersion,
       entries: safeSessionEntries(this.session.sessionManager, this.finalAnswers, this.options.secrets ?? []),
-      domain_state: this.memory.state, dialogue: this.dialogue, final_signatures: [...this.finalAnswers] };
+      domain_state: this.memory.state, dialogue: this.dialogue, final_signatures: [...this.finalAnswers],...(this.workbench?{answer_policy:'workbench-v1' as const}:{}) };
     return wrapSnapshot(JSON.parse(snapshotJSON(snapshot, this.options.secrets ?? [])) as SessionSnapshot, this.options.controls);
   }
 }

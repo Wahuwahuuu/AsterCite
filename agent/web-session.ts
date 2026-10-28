@@ -124,7 +124,7 @@ export class PaperWebSession implements WebSessionPort {
     const provider=this.createHarness?undefined:await createUserRuntime(this.config.model,this.key);
     const options={cwd:this.assets.root,modelRuntime:provider?.runtime,model:provider?.model,worker:this.worker,
       knownPaperIds:new Set(this.assets.publicPapers.map(p=>p.paper_id)),secrets:[this.key],thinkingLevel:this.config.model.thinking_level,
-      questionPreparation:"light-v1" as const,controls:this.controls,selectedScopeCoverage:true,onExecutionEvent:(event:ExecutionEvent)=>this.observe(event),
+      questionPreparation:"light-v1" as const,answerPolicy:'workbench-v1' as const,controls:this.controls,selectedScopeCoverage:true,onExecutionEvent:(event:ExecutionEvent)=>this.observe(event),
       p2:{profile:"B" as const,executionVersion:"full-v1" as const,indexVersion:this.assets.indexVersion,evidenceIndex:this.assets.evidenceIndex,
         publicPapers:this.assets.publicPapers,commonPrompt:this.assets.commonPrompt,nlu:true,reflect:false,structuredMemory:true,answerContract:"full-v1-json" as const,
         stageOutputLimits:{question_frame:this.config.model.max_output_tokens,evidence_check:this.config.model.max_output_tokens,generation:this.config.model.max_output_tokens}},

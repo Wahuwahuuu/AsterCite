@@ -37,7 +37,8 @@ export function parseArgs(args:string[]){
 }
 /** Public action/usage log excludes internal drafts, thinking and provider streams. */
 export function visibleTurn(record:ControlledTurnRecord){
-  return {version:1,turn_id:record.user_turn_id,status:record.status,final_answer:record.final_answer,final_structure:record.final_structure,final_request_id:record.final_request_id,
+  return {version:1,turn_id:record.user_turn_id,status:record.status,answer_policy:record.answer_policy,final_answer:record.final_answer,final_structure:record.final_structure,final_request_id:record.final_request_id,
+    answer_adjustments:(record.reliability_adaptations??[]).map(({stage,request_id,kind})=>({stage,request_id,kind})),
     elapsed_ms:record.elapsed_ms,failure_code:record.failure_code,error:record.error,citation_validity:record.citation_validity,
     requests:record.requests.map(r=>({request_id:r.request_id,admitted:r.admitted,phase:r.phase,stage:r.stage,status:r.status,http_attempts:r.http_attempts,
       http_status:r.http_status,elapsed_ms:r.elapsed_ms,usage:r.usage,usage_status:r.usage_status,pricing_status:"unknown",tool_context:r.tool_context})),
@@ -72,7 +73,7 @@ export async function runCli(args:string[],root=PROJECT_ROOT):Promise<number>{
     const {runtime,model}=await createUserRuntime(config.model,key);
     worker=await createWorker(assets,config);
     harness=await MainPaperHarness.create({cwd:root,modelRuntime:runtime,model,worker,knownPaperIds:new Set(assets.publicPapers.map(p=>p.paper_id)),
-      secrets:[key],thinkingLevel:config.model.thinking_level,questionPreparation:"light-v1",
+      secrets:[key],thinkingLevel:config.model.thinking_level,questionPreparation:"light-v1",answerPolicy:'workbench-v1',
       controls:{arm:"C",reflect:false,compaction:config.session.compaction,reliability:"candidate",implementation_id:assets.implementationId},
       p2:{profile:"B",executionVersion:"full-v1",indexVersion:assets.indexVersion,evidenceIndex:assets.evidenceIndex,publicPapers:assets.publicPapers,
         commonPrompt:assets.commonPrompt,nlu:true,reflect:false,structuredMemory:true,answerContract:"full-v1-json",
