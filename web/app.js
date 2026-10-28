@@ -26,7 +26,7 @@ function inspectTurn(turn,live=false){
   inspector.openRun(turn,async item=>{
     if(!owner||!item.turn_id)throw new Error('这条历史记录没有保存完整请求详情。');
     const headers={'X-AsterCite-Session':owner.token};if(accessToken)headers.Authorization='Bearer '+accessToken;
-    const response=await fetch(`/api/sessions/${owner.id}/traces/${item.turn_id}/${item.id}`,{headers});if(!response.ok)throw new Error('详情暂不可用');return (await response.json()).detail;
+    const response=await fetch(`/api/sessions/${owner.id}/traces/${encodeURIComponent(item.turn_id)}/${encodeURIComponent(item.id)}`,{headers});if(!response.ok)throw new Error('详情暂不可用');return (await response.json()).detail;
   },{live});
 }
 const activity=new ActivityPanel($('agent-activity'),()=>inspectTurn(activity.snapshot(),true));

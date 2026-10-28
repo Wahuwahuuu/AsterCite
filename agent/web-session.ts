@@ -21,7 +21,7 @@ import {LongTermMemory,type MemoryRecall} from './long-term-memory.ts';
 
 export interface WebSource { chunk_id:string; paper_id:string; title:string; section:string; text:string;format?:'markdown';content_type?:'table'|'equation';source_url?:string }
 export interface WebExecutionDetail extends ExecutionEvent {turn_id:string;cycle:number;elapsed_ms:number;turn_elapsed_ms:number;started_at:string}
-export interface WebActivity { id:string; kind:"model"|"tool"|"memory"|"compaction"; status:"running"|"completed"|"error"; label:string; detail:string; elapsed_ms:number; tool?:"search_papers"|"retrieve_chunks";paper_ids?:string[];turn_id?:string;cycle?:number;parent_id?:string;origin?:"model"|"host_plan";has_details?:boolean;context?:ContextView }
+export interface WebActivity { id:string; kind:"model"|"tool"|"memory"|"compaction"; status:"running"|"completed"|"error"; label:string; detail:string; elapsed_ms:number; tool?:"search_papers"|"retrieve_chunks";paper_ids?:string[];turn_id?:string;cycle?:number;parent_id?:string;origin?:"model"|"host_plan";has_details?:boolean;context?:ContextView;stage?:string;phase?:string;started_at?:string;request_elapsed_ms?:number }
 export type ProgressListener=(activity:WebActivity)=>void;
 export type AnswerListener=(update:AnswerUpdate&{sources:WebSource[];context?:ContextView})=>void;
 export interface WebAskOptions {request_id?:string;signal?:AbortSignal;onTasks?:(progress:import('./task-progress.ts').TaskProgress)=>void}
@@ -106,7 +106,7 @@ export class PaperWebSession implements WebSessionPort {
       }catch{}
       detail=`${input?.query??""}${count?" · "+count:input?.paper_ids?" · "+input.paper_ids.join("、"):""}`;
     }
-    this.emit({id:event.id,kind:event.kind,status:event.status,label,detail,tool:event.tool,paper_ids:paperIds,turn_id:this.activeTurn,cycle,parent_id:event.parent_id,origin:event.origin,has_details:true});
+    this.emit({id:event.id,kind:event.kind,status:event.status,label,detail,tool:event.tool,paper_ids:paperIds,turn_id:this.activeTurn,cycle,parent_id:event.parent_id,origin:event.origin,has_details:true,stage:value.stage,phase:value.phase,started_at:value.started_at,request_elapsed_ms:value.elapsed_ms});
   }
   async detail(turnId:string,id:string):Promise<WebExecutionDetail|null>{return turnId===this.activeTurn?structuredClone(this.traceDetails.get(id)??null):readSavedTrace(this.directory,turnId,id);}
   private emit(value:Omit<WebActivity,"elapsed_ms">){

@@ -3,11 +3,16 @@ import {renderTrace} from './trace-view.js';
 const make=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
 export function executionTime(ms){const seconds=Math.floor(Math.max(0,ms)/1000);return seconds<60?seconds+' 秒':Math.floor(seconds/60)+' 分 '+(seconds%60)+' 秒';}
-function modelNode(item,detail){
-  const stage=(detail?.stage??'')+' '+(item.label??''),phase=detail?.phase??'';
-  if(/nlu|prepar|question_frame|understand|intent|理解|意图|压缩/iu.test(stage))return 'understand';
-  if(/generat|closing|repair|final|整理回答|生成回答/iu.test(stage)||/generat/iu.test(phase))return 'generate';
-  if(/nlu|prepar|compaction/iu.test(phase))return 'understand';
+function modelNode(item,detail,moment){
+  const stage=detail?.stage??item.stage??'',phase=detail?.phase??item.phase??'';
+  if(stage==='long_term_memory'||phase==='memory')return 'memory';
+  if(['question_preparation','question_frame','compaction'].includes(stage)||phase==='compaction')return 'understand';
+  if(['turn_completion','comparison_check','evidence_check'].includes(stage))return 'generate';
+  if(moment==='end'&&detail?.output?.tool_calls?.length)return 'decision';
+  if(moment==='start'&&phase==='agent'&&detail?.input?.tools?.length)return 'decision';
+  if(['generate','closing','citation_repair'].includes(stage))return 'generate';
+  // 老记录尚未读到详情时，仅使用已保存的展示标签作兼容。
+  if(!stage){const label=item.label??'';if(/记忆/iu.test(label))return 'memory';if(/核对.*(?:完成|比较)|整理回答|生成回答|引用/u.test(label))return 'generate';if(/理解|意图|压缩/u.test(label))return 'understand';}
   return 'decision';
 }
 
@@ -17,15 +22,17 @@ export function buildExecutionTimeline(turn,details={}){
   const activities=turn.activity??[];
   for(const [order,item] of activities.entries()){
     const detail=details[item.id],end=finite(detail?.turn_elapsed_ms)&&detail.status===item.status?detail.turn_elapsed_ms:finite(item.elapsed_ms)?item.elapsed_ms:0;
-    const modern=typeof detail?.started_at==='string'&&finite(detail?.turn_elapsed_ms)&&finite(detail?.elapsed_ms);
-    const target=item.kind==='model'?modelNode(item,detail):item.kind==='tool'?'action':item.kind==='compaction'?'understand':'memory';
-    const name=item.kind==='tool'?(item.tool??detail?.tool??'工具'):item.kind==='model'?`第 ${detail?.cycle??item.cycle??order+1} 次模型请求`:item.label;
+    const startedAt=detail?.started_at??item.started_at,duration=detail?.elapsed_ms??item.request_elapsed_ms,recordedEnd=finite(detail?.turn_elapsed_ms)?detail.turn_elapsed_ms:end;
+    const modern=typeof startedAt==='string'&&finite(recordedEnd)&&finite(duration);
+    const target=item.kind==='model'?modelNode(item,detail,'start'):item.kind==='tool'?'action':item.kind==='compaction'?'understand':'memory';
+    const stage=detail?.stage??item.stage,purpose={long_term_memory:'提炼长期记忆',turn_completion:'核对任务完成情况',comparison_check:'核对比较依据',evidence_check:'核对原文依据'}[stage];
+    const name=item.kind==='tool'?(item.tool??detail?.tool??'工具'):item.kind==='model'?`第 ${detail?.cycle??item.cycle??order+1} 次模型请求${purpose?' · '+purpose:''}`:item.label;
     const base={id:item.id,kind:item.kind,item,detail,name,order,status:item.status};
     if(modern||item.status==='running'){
-      const at=modern?Math.max(0,detail.turn_elapsed_ms-detail.elapsed_ms):end;
+      const at=modern?Math.max(0,recordedEnd-duration):end;
       events.push({...base,key:item.id+':start',at,node:target,moment:'start',title:item.kind==='tool'?'调用工具 · '+name:item.kind==='model'?name+' · 发送上下文':name+' · 开始',status:'running'});
     }
-    if(item.status!=='running')events.push({...base,key:item.id+':end',at:end,node:item.kind==='tool'?'observation':target,moment:'end',title:item.kind==='tool'?'观察返回 · '+name:item.kind==='model'?name+' · 收到输出':name,status:item.status,legacy:!modern&&(item.kind==='model'||item.kind==='tool')});
+    if(item.status!=='running')events.push({...base,key:item.id+':end',at:end,node:item.kind==='tool'?'observation':item.kind==='model'?modelNode(item,detail,'end'):target,moment:'end',title:item.kind==='tool'?'观察返回 · '+name:item.kind==='model'?name+' · 收到输出':name,status:item.status,legacy:Boolean(detail)&&!modern&&(item.kind==='model'||item.kind==='tool')});
   }
   events.sort((a,b)=>a.at-b.at||(a.kind==='question'?-1:b.kind==='question'?1:(a.order??0)-(b.order??0))||(a.moment==='start'?-1:1));
   const duration=Math.max(finite(turn.elapsed_ms)?turn.elapsed_ms:0,...events.map(event=>event.at));
@@ -71,7 +78,7 @@ function vector(tag,attributes={},text){const n=document.createElementNS(SVG,tag
 let graphId=0;
 const graphNodes=[
   ['question',18,116,112,'用户问题','输入'],['understand',164,116,146,'理解与准备','上下文 / 检索计划'],
-  ['decision',370,116,144,'模型决策','是否调用工具'],['action',562,116,144,'调用工具','执行检索'],
+  ['decision',370,116,144,'模型决策','回答或选择工具'],['action',562,116,144,'调用工具','执行检索'],
   ['observation',754,116,144,'观察返回','读取工具结果'],['generate',958,116,130,'整理回答','生成 / 引用检查'],['memory',1118,116,92,'会话记忆','更新状态']
 ];
 const graphEdges=[
@@ -81,6 +88,7 @@ const graphEdges=[
   ['understand-action','M310 145 H334 V222 H634 V174','检索计划',450,213],
   ['observation-action','M826 174 V222 H634 V174','按计划继续',755,213],
   ['observation-generate','M898 145 H958'],['decision-generate','M442 116 V22 H1023 V116','直接生成',1023,15],
+  ['generate-decision','M1023 116 V44 H442 V116','继续判断',634,37],
   ['understand-generate','M237 116 V22 H1023 V116'],['generate-memory','M1088 145 H1118'],
   ['generate-generate','M1000 116 C960 65 1085 65 1045 116','检查后修正',1023,70]
 ];

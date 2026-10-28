@@ -154,6 +154,21 @@ test("request details and Chinese translations belong to the owning session and 
     const translated=await f.post(path,request,own);assert.equal(translated.status,200);assert.equal((await translated.json()).items[0].text,"原始依据。");assert.equal(translations,1);
   }finally{await f.close();}
 });
+test('trace details accept opaque provider call IDs while preserving session ownership and safe paths',async()=>{
+  const f=await fixture();
+  try{
+    const owner=await (await f.post('/api/sessions',{})).json(),other=await (await f.post('/api/sessions',{})).json();
+    const turn=randomUUID(),directory=join(f.root,'.local/web/sessions',owner.id),ids=['call_provider_fixture_0123456789','toolu_01AbCdEf','provider:call-42',randomUUID(),'host-'+randomUUID()];
+    await mkdir(join(directory,'turns'));await mkdir(join(directory,'traces'));
+    const records=ids.map(id=>({id,turn_id:turn,kind:'tool',tool:'retrieve_chunks',stage:'generate',phase:'agent',status:'completed',started_at:'2026-10-29T00:00:00Z',turn_elapsed_ms:1000,elapsed_ms:500,input:{query:'source question'},output:{text:'{"chunks":[]}',tool_calls:[]}}));
+    const bytes=JSON.stringify(records)+'\n';await writeFile(join(directory,'traces',turn+'.json'),bytes);await writeFile(join(directory,'turns',turn+'.json'),JSON.stringify({trace_sha256:sha(bytes)}));
+    const url=(id:string)=>f.origin+`/api/sessions/${owner.id}/traces/${turn}/`+encodeURIComponent(id),headers={'X-AsterCite-Session':owner.token};
+    assert.equal((await fetch(url(ids[0]))).status,403);assert.equal((await fetch(url(ids[0]),{headers:{'X-AsterCite-Session':other.token}})).status,403);
+    for(const id of ids){const response=await fetch(url(id),{headers});assert.equal(response.status,200,id);const {detail}=await response.json();assert.equal(detail.id,id);assert.equal(detail.started_at,records[0].started_at);assert.equal(detail.input.query,'source question');}
+    for(const id of ['../owner.json','a/b','a\\b','a\0b','a?b','a#b','x'.repeat(201)])assert.equal((await fetch(url(id),{headers})).status,400,id);
+    assert.equal((await fetch(url('unknown_event'),{headers})).status,404);
+  }finally{await f.close();}
+});
 test("HTTP isolates browser sessions, requires same-origin changes, rejects credentials and private paths",async()=>{
   const f=await fixture();
   try{

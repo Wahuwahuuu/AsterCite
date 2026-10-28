@@ -13,6 +13,7 @@ import { SourceTranslation,type SourceTranslator } from "./source-translation.ts
 import {ContextTracker,type ContextView} from './workbench-context.ts';
 import {ScientificReading} from './scientific-reading.ts';
 import {LongTermMemory,MemoryOwners,type MemoryOwner} from './long-term-memory.ts';
+import {validExecutionEventId} from './execution-trace.ts';
 
 export interface WebServerOptions {
   root:string; mode:"demo"|"live"; factory?:WebSessionFactory; papers?:readonly Paper[];
@@ -175,7 +176,7 @@ export async function createWebServer(options:WebServerOptions){
           json(res,201,{id,token});return;
         }finally{creating=false;}
       }
-      const match=/^\/api\/sessions\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/(question(?:\/stream)?|stop|settings|translate|memory\/import|traces\/[a-f0-9-]{36}\/(?:host-)?[a-f0-9-]{36}))?$/u.exec(url.pathname);
+      const match=/^\/api\/sessions\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/(question(?:\/stream)?|stop|settings|translate|memory\/import|traces\/[a-f0-9-]{36}\/[^/]{1,600}))?$/u.exec(url.pathname);
       if(!match)throw new RuntimeFailure("NOT_FOUND","No session route");
       const dir=await containedPath(options.root,".local/web/sessions/"+match[1]);
       let owner:{token_digest:string;memory_profile?:string};try{owner=JSON.parse(await readFile(await containedPath(dir,"owner.json"),"utf8"));}catch{throw new RuntimeFailure("NOT_FOUND","Missing session");}
@@ -202,7 +203,9 @@ export async function createWebServer(options:WebServerOptions){
         }finally{deleting.delete(match[1]);}
       }
       if(method==="GET"&&match[2]?.startsWith("traces/")){
-        const [,turnId,eventId]=match[2].split("/");
+        const [,turnId,encodedId]=match[2].split("/");let eventId:string;
+        try{eventId=decodeURIComponent(encodedId);}catch{throw new RuntimeFailure('INVALID_INPUT','Invalid event ID');}
+        if(!validExecutionEventId(eventId))throw new RuntimeFailure('INVALID_INPUT','Invalid event ID');
         const detail=await liveSessions.get(match[1])?.detail?.(turnId,eventId)??await readSavedTrace(dir,turnId,eventId);
         if(!detail)throw new RuntimeFailure("NOT_FOUND","No trace details");json(res,200,{detail});return;
       }

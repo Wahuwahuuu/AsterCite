@@ -1,5 +1,8 @@
 import { redactText } from "./contracts.ts";
 
+/** 服务商事件编号为不透明标识，仅用于匹配事件，不作为文件路径。 */
+export function validExecutionEventId(value:string):boolean{return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(value);}
+
 export interface TraceMessage { role:string; text:string; tool_call_id?:string; tool_name?:string; tool_calls?:Array<{id:string;name:string;arguments:unknown}> }
 export interface TraceInput { format:"provider_payload"|"sdk_context"; messages:TraceMessage[]; tools:Array<{name:string;description:string;parameters:unknown}>; settings:Record<string,string|number|boolean> }
 export interface TraceOutput { text:string; tool_calls:Array<{id:string;name:string;arguments:unknown}>; stop_reason?:string }

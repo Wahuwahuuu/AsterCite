@@ -73,3 +73,32 @@ test('live requests have no future completion and absent records do not become a
   const other=buildExecutionTimeline(turn([item('another','model',50)]),{pending:detail('pending','tool',25,10)});
   assert.ok(!other.events.some(event=>event.id==='pending'));
 });
+
+test('memory synthesis is a memory operation even though it uses a model request',()=>{
+  const activities=[item('answer','model',60,{stage:'generate',phase:'agent'}),item('check','model',80,{stage:'turn_completion',phase:'auxiliary'}),item('remember','model',100,{stage:'long_term_memory',phase:'auxiliary'})];
+  const details={answer:detail('answer','model',60,20,{stage:'generate',phase:'agent'}),check:detail('check','model',80,20,{stage:'turn_completion',phase:'auxiliary'}),remember:detail('remember','model',100,20,{stage:'long_term_memory',phase:'auxiliary'})};
+  const events=buildExecutionTimeline(turn(activities),details).events;
+  assert.equal(events.find(event=>event.key==='check:start')?.node,'generate');
+  for(const event of events.filter(event=>event.id==='remember')){assert.equal(event.node,'memory');assert.ok(event.title.includes('提炼长期记忆'));}
+  assert.equal(events.at(-1)?.node,'memory');
+  const pending=buildExecutionTimeline(turn(activities)).events;assert.equal(pending.find(event=>event.id==='remember')?.node,'memory');
+});
+
+test('missing details do not imply that a stored request lacks start times',()=>{
+  const unavailable=buildExecutionTimeline(turn([item('call_provider','tool',60)])).events;
+  assert.equal(unavailable.find(event=>event.id==='call_provider')?.legacy,false);
+  const retained=buildExecutionTimeline(turn([item('call_provider','tool',60,{stage:'generate',phase:'agent',started_at:'2026-10-29T00:00:00Z',request_elapsed_ms:20})])).events;
+  assert.deepEqual(retained.filter(event=>event.id==='call_provider').map(event=>[event.moment,event.at]),[['start',40],['end',60]]);
+  assert.equal(retained.some(event=>event.legacy),false);
+});
+
+test('a model can decide to call tools during answer composition without exposing future tool calls at replay start',()=>{
+  const input={format:'provider_payload',messages:[],settings:{},tools:[{name:'retrieve_chunks',description:'read source',parameters:{type:'object'}}]} as const;
+  const request=detail('choose','model',50,20,{stage:'generate',phase:'agent',input:{...input,tools:[...input.tools],messages:[]},output:{text:'',tool_calls:[{id:'call_real',name:'retrieve_chunks',arguments:{query:'original'}}]}});
+  const timeline=buildExecutionTimeline(turn([item('choose','model',50)]),{choose:request});
+  for(const event of timeline.events.filter(event=>event.id==='choose'))assert.equal(event.node,'decision');
+  const start=timeline.events.find(event=>event.key==='choose:start')!;assert.equal(executionDetailAt(request,start)?.output,undefined);
+  const answer={...request,output:{text:'This is the answer.',tool_calls:[]}};
+  const answered=buildExecutionTimeline(turn([item('choose','model',50)]),{choose:answer}).events;
+  assert.equal(answered.find(event=>event.key==='choose:start')?.node,'decision');assert.equal(answered.find(event=>event.key==='choose:end')?.node,'generate');
+});
