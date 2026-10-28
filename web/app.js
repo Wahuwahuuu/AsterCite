@@ -6,12 +6,13 @@ import {SessionPanel} from './session-panel.js';
 import {renderMarkdown} from './markdown.js';
 import {AnswerPreview} from './answer-preview.js';
 import {ReaderFollow} from './reader-follow.js';
+import {normalizeConversations,listConversations,renameConversation,touchConversation} from './conversations.js';
 
 const $=id=>document.getElementById(id);
 const make=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-const state={mode:'demo',papers:[],sample:null,turns:[],scope:[],pending_compaction:false,memory:null,context:null,initialContext:null,budget:null,busy:false,active:null,accessToken:'',demoIndex:-1,sessions:[],sourceTurn:-1};
+const state={mode:'demo',papers:[],sample:null,turns:[],scope:[],pending_compaction:false,memory:null,context:null,initialContext:null,budget:null,busy:false,active:null,accessToken:'',demoIndex:-1,sessions:[],showArchived:false,sourceTurn:-1};
 const STORAGE='astercite.web.sessions.v1';
-const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const sessionMenu=$('session-menu');let menuTarget=null,menuAnchor=null,renameTarget=null;
 const inspector=new TraceInspector();
 function inspectTurn(turn,live=false){
   const owner=state.active,accessToken=state.accessToken;
@@ -42,7 +43,7 @@ $('pdf-paper').addEventListener('change',()=>openPdf($('pdf-paper').value));
 $('reader-follow').addEventListener('change',()=>{readerFollow.setEnabled($('reader-follow').checked);if(readerFollow.enabled)readerFollow.finish(state);renderReaderFollow();});
 $('reader-open').addEventListener('click',openEvidence);
 $('suggestions-open').addEventListener('click',()=>{$('welcome').hidden=false;$('chat-scroll').scrollTop=0;});
-try{state.sessions=JSON.parse(localStorage.getItem(STORAGE)||'[]').filter(s=>UUID.test(s.id)&&/^[a-f0-9]{64}$/.test(s.token)&&typeof s.label==='string').slice(0,100);}catch{state.sessions=[];}
+try{state.sessions=normalizeConversations(JSON.parse(localStorage.getItem(STORAGE)||'[]'));}catch{state.sessions=[];}
 function persist(){try{localStorage.setItem(STORAGE,JSON.stringify(state.sessions));}catch{notice('浏览器没有允许保存会话列表；当前对话仍可继续。');}}
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);$('notice').hidden=false;}
 function clearNotice(){$('notice').hidden=true;}
@@ -59,23 +60,24 @@ async function api(path,body,{method=body===undefined?'GET':'POST',session=state
 }
 function busy(value){
   state.busy=value;$('busy-indicator').hidden=!value;
+  if(value)closeSessionMenu();$('session-archive-toggle').disabled=value;
   for(const id of ['send','new-chat','compact','scope-all','question'])$(id).disabled=value;
   $('compact').disabled=value||state.mode!=='live';
-  document.querySelectorAll('.paper-scope,.session-item,.session-delete,.example-card').forEach(n=>n.disabled=value);
+  document.querySelectorAll('.paper-scope,.session-item,.session-more,.example-card').forEach(n=>n.disabled=value);
   $('send-label').textContent=value?'处理中':state.mode==='demo'?'播放下一问':'发送问题';
   renderSessionPanels();
   if(value)$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
 }
 function applyView(view,{follow=true}={}){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.context=view.context??state.initialContext;state.budget=view.budget;render();const last=state.turns.at(-1);if(last)inspector.updateRun(last);activity.reset();if(follow)readerFollow.finish(view);renderReaderFollow();}
 function resetConversation(){
-  state.active=null;state.turns=[];state.scope=[];state.memory=null;state.context=state.initialContext;state.budget=null;state.pending_compaction=false;state.demoIndex=-1;state.sourceTurn=-1;
+  state.active=null;state.turns=[];state.scope=[];state.memory=null;state.context=state.initialContext;state.budget=null;state.pending_compaction=false;state.demoIndex=-1;state.sourceTurn=-1;state.showArchived=false;closeSessionMenu();
   inspector.reset();translationCache.clear();reader.clearHighlight();readerFollow.beginTurn();renderReaderFollow();
   for(const id of ['memory-dialog','compression-dialog'])if($(id).open)$(id).close();
   render();activity.reset({replay:state.mode==='demo'});if(state.mode==='live'){$('question').value='';$('question').focus();}
 }
 async function ensureSession(){
   if(state.active)return;
-  const value=await api('/api/sessions',{});state.active={...value,label:'新对话'};
+  const value=await api('/api/sessions',{}),now=Date.now();state.active=normalizeConversations([{...value,label:'新对话',created_at:now,updated_at:now}])[0];state.showArchived=false;
   state.sessions.unshift(state.active);persist();renderSessions();
 }
 function renderPapers(){
@@ -93,21 +95,56 @@ function renderPapers(){
   if(!papers.length)list.append(make('p','sidebar-empty','没有匹配的论文'));
 }
 function renderSessions(){
+  closeSessionMenu();$('session-list-title').textContent=state.showArchived?'已归档对话':'最近对话';
+  const archived=state.sessions.filter(item=>item.archived).length,toggle=$('session-archive-toggle');toggle.hidden=state.mode!=='live';toggle.disabled=state.busy;toggle.textContent=state.showArchived?'最近对话':'归档'+(archived?' ('+archived+')':'');toggle.setAttribute('aria-pressed',String(state.showArchived));
   const list=$('session-list');list.replaceChildren();
   if(state.mode==='demo'){
     const b=make('button','session-item selected');b.append(make('span',null,'◷'),make('span',null,'情感分析与语音表示 · 示例'));b.addEventListener('click',()=>playDemo(0));list.append(b);return;
   }
-  for(const item of state.sessions){
-    const row=make('div','session-row');
+  const visible=listConversations(state.sessions,state.showArchived);
+  for(const item of visible){
+    const row=make('div','session-row'+(state.active?.id===item.id?' selected':''));
     const b=make('button','session-item'+(state.active?.id===item.id?' selected':''));b.disabled=state.busy;
-    b.append(make('span',null,'◷'),make('span',null,item.label));b.title=item.label;
+    b.append(make('span','session-label',item.label));b.title=item.label+(item.pinned?'（已置顶）':'');
+    if(item.pinned){const pin=sessionMenu.querySelector('[data-session-action="pin"] svg').cloneNode(true);pin.classList.add('session-pin-indicator');b.append(pin);}
     b.addEventListener('click',async()=>{if(state.busy)return;clearNotice();busy(true);try{const view=await api('/api/sessions/'+item.id,undefined,{session:item});inspector.reset();readerFollow.beginTurn();state.active=item;applyView(view);notice('已恢复这个会话。');}catch(e){notice(e.message,true);}finally{busy(false);}});
-    const remove=make('button','session-delete','删除');remove.disabled=state.busy;remove.setAttribute('aria-label','删除对话：'+item.label);remove.title='删除这段对话';
-    remove.addEventListener('click',()=>{if(state.busy)return;deleteTarget=item;$('delete-session-name').textContent=item.label;$('delete-session-dialog').showModal();});
-    row.append(b,remove);list.append(row);
+    const more=make('button','session-more','⋯');more.disabled=state.busy;more.setAttribute('aria-label','更多操作：'+item.label);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');more.title='对话操作';
+    more.addEventListener('click',()=>openSessionMenu(item,more));row.addEventListener('contextmenu',event=>{if(state.busy)return;event.preventDefault();openSessionMenu(item,more);});
+    row.append(b,more);list.append(row);
   }
-  if(!state.sessions.length)list.append(make('p','sidebar-empty','你的对话会保存在这里。'));
+  if(!visible.length)list.append(make('p','sidebar-empty',state.showArchived?'没有归档的对话。':'你的对话会保存在这里。'));
 }
+function closeSessionMenu(restoreFocus=false){sessionMenu.hidden=true;menuAnchor?.setAttribute('aria-expanded','false');if(restoreFocus&&menuAnchor?.isConnected)menuAnchor.focus();menuTarget=null;menuAnchor=null;}
+function openSessionMenu(item,anchor){
+  if(state.busy)return;if(menuTarget?.id===item.id){closeSessionMenu(true);return;}closeSessionMenu();menuTarget=item;menuAnchor=anchor;anchor.setAttribute('aria-expanded','true');
+  $('session-pin-label').textContent=item.pinned?'取消置顶':'置顶';$('session-archive-label').textContent=item.archived?'取消归档':'归档';sessionMenu.hidden=false;
+  const rect=anchor.getBoundingClientRect(),width=sessionMenu.offsetWidth,height=sessionMenu.offsetHeight;
+  sessionMenu.style.left=Math.max(12,Math.min(window.innerWidth-width-12,rect.right-24))+'px';sessionMenu.style.top=Math.max(12,Math.min(window.innerHeight-height-12,rect.bottom+6))+'px';sessionMenu.querySelector('button').focus();
+}
+$('session-archive-toggle').addEventListener('click',()=>{if(state.busy)return;state.showArchived=!state.showArchived;renderSessions();});
+document.addEventListener('pointerdown',event=>{if(!sessionMenu.hidden&&!sessionMenu.contains(event.target)&&!menuAnchor?.contains(event.target))closeSessionMenu();});
+window.addEventListener('resize',()=>closeSessionMenu());
+document.addEventListener('scroll',event=>{if(!sessionMenu.hidden&&!sessionMenu.contains(event.target))closeSessionMenu();},true);
+sessionMenu.addEventListener('keydown',event=>{
+  if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeSessionMenu(true);return;}
+  if(event.key==='Tab'){closeSessionMenu(true);return;}
+  if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;event.preventDefault();const buttons=[...sessionMenu.querySelectorAll('button')],at=buttons.indexOf(document.activeElement);
+  buttons[event.key==='Home'?0:event.key==='End'?buttons.length-1:(at+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus();
+});
+sessionMenu.addEventListener('click',event=>{
+  const action=event.target.closest('[data-session-action]')?.dataset.sessionAction,item=menuTarget;if(!action||!item||state.busy)return;closeSessionMenu(true);
+  if(action==='rename'){renameTarget=item;$('rename-session-input').value=item.label;$('rename-session-error').hidden=true;$('rename-session-dialog').showModal();$('rename-session-input').focus();$('rename-session-input').select();}
+  else if(action==='pin'){item.pinned=!item.pinned;persist();renderSessions();}
+  else if(action==='archive'){item.archived=!item.archived;persist();if(item.archived&&state.active?.id===item.id)resetConversation();else{if(!item.archived)state.showArchived=false;renderSessions();}notice(item.archived?'对话已归档，可从“归档”入口找回。':'对话已移回最近对话。');}
+  else if(action==='delete'){deleteTarget=item;$('delete-session-name').textContent=item.label;$('delete-session-dialog').showModal();}
+});
+$('rename-session-cancel').addEventListener('click',()=>$('rename-session-dialog').close());
+$('rename-session-dialog').addEventListener('close',()=>{renameTarget=null;});
+$('rename-session-form').addEventListener('submit',event=>{
+  event.preventDefault();if(state.busy||!renameTarget)return;
+  try{Object.assign(renameTarget,renameConversation(renameTarget,$('rename-session-input').value));persist();$('rename-session-dialog').close();renderSessions();}
+  catch(error){$('rename-session-error').textContent=error.message;$('rename-session-error').hidden=false;}
+});
 let deleteTarget=null;
 $('delete-session-cancel').addEventListener('click',()=>$('delete-session-dialog').close());
 $('delete-session-dialog').addEventListener('close',()=>{deleteTarget=null;});
@@ -243,7 +280,7 @@ async function sendQuestion(){
     const response=await fetch('/api/sessions/'+state.active.id+'/question/stream',{method:'POST',headers,body:JSON.stringify({question})});
     if(response.status===401)$('access-dialog').showModal();
     const view=await readQuestionStream(response,event=>{if(event.context){state.context=event.context;renderSessionPanels();}readerFollow.activity(event);activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});},update=>{if(update.context){state.context=update.context;renderSessionPanels();}readerFollow.answer(update);preview.update(update);});applyView(view);activity.finish();$('question').value='';
-    state.active.label=state.turns[0]?.question.slice(0,32)||'新对话';persist();renderSessions();
+    Object.assign(state.active,touchConversation(state.active,state.turns[0]?.question));persist();renderSessions();
     if(state.turns.at(-1)?.status!=='completed')notice('本轮未完成，请检查模型服务。已发生的请求计入会话用量。',true);
   }catch(e){activity.finish(false);if(preview?.text){preview.interrupt();document.querySelector('.pending-question')?.classList.remove('pending-question');}else document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{busy(false);}
 }
@@ -253,7 +290,7 @@ $('paper-search').addEventListener('input',renderPapers);
 $('scope-all').addEventListener('click',()=>{if(state.mode==='demo'){state.scope=[];renderScope();renderPapers();}else void settings([],state.pending_compaction);});
 $('compact').addEventListener('click',()=>sessionPanel.openCompression());
 $('new-chat').addEventListener('click',()=>{if(state.busy)return;clearNotice();resetConversation();busy(false);});
-document.addEventListener('keydown',e=>{if(e.key==='n'&&!e.ctrlKey&&!e.metaKey&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&!document.querySelector('dialog[open]'))$('new-chat').click();if(e.key==='Escape'){document.querySelector('.evidence-panel').classList.remove('mobile-open');document.querySelector('.sidebar').classList.remove('mobile-open');}});
+document.addEventListener('keydown',e=>{if(e.key==='n'&&!e.ctrlKey&&!e.metaKey&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&!document.querySelector('dialog[open]')&&sessionMenu.hidden)$('new-chat').click();if(e.key==='Escape'){document.querySelector('.evidence-panel').classList.remove('mobile-open');document.querySelector('.sidebar').classList.remove('mobile-open');}});
 $('setup-open').addEventListener('click',()=>$('setup-dialog').showModal());
 for(const [button,panel] of [['guide-demo','demo-guide'],['guide-live','live-guide']])$(button).addEventListener('click',()=>{for(const id of ['guide-demo','guide-live'])$(id).classList.toggle('selected',id===button);for(const id of ['demo-guide','live-guide'])$(id).hidden=id!==panel;});
 $('memory-open').addEventListener('click',()=>sessionPanel.openMemory());
@@ -287,7 +324,7 @@ async function init(){
     const first=state.papers.find(p=>p.paper_id==='1611.09441')??state.papers[0];if(first){readingPaper=first;$('pdf-paper').value=first.paper_id;$('pdf-title').textContent=first.title;if(!config.access_token_required)readerTab('pdf');}
     if(state.mode==='live'){
       if(config.access_token_required)$('access-dialog').showModal();
-      else if(state.sessions.length){state.active=state.sessions[0];try{applyView(await api('/api/sessions/'+state.active.id));}catch(e){state.active=null;renderSessions();notice(e.message,true);}}
+      else if(listConversations(state.sessions).length){state.active=listConversations(state.sessions)[0];try{applyView(await api('/api/sessions/'+state.active.id));}catch(e){state.active=null;renderSessions();notice(e.message,true);}}
     }
   }catch{notice('页面资料未能加载，请刷新重试。',true);$('send').disabled=true;}
 }

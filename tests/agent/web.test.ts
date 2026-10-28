@@ -8,6 +8,7 @@ import { createWebServer, parseWebArgs, type WebServerOptions } from "../../agen
 import { PaperWebSession, type WebSessionPort, type WebView, type WebActivity } from "../../agent/web-session.ts";
 import { parseConfig, sha } from "../../agent/config.ts";
 import { RuntimeFailure } from "../../agent/contracts.ts";
+import {SessionBudget} from '../../agent/budget.ts';
 import type { Assets } from "../../agent/assets.ts";
 import { mainFixture, preparation, final, PREPARED_INDEX } from "./main-fixture.ts";
 
@@ -186,6 +187,7 @@ test("website adapter runs the existing Harness, saves citations and restores me
       return (await mainFixture([reply(JSON.stringify({...preparation,queries:["find "+key]})),reply(JSON.stringify(final))],[[0]],extra)).harness;
     }};
   try{
+    const legacy=await SessionBudget.open(root,assets.implementationId,config.session.max_turns);await legacy.close();
     let session=await PaperWebSession.open(options);
     await session.configure(["p1"],false);
     await assert.rejects(session.configure(["not-in-corpus"],false),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_SCOPE");
@@ -203,12 +205,19 @@ test("website adapter runs the existing Harness, saves citations and restores me
     const detail=await session.detail(first.turns[0].turn_id!,firstModel.id);assert.ok(detail?.input);assert.ok(detail?.output);assert.ok(!JSON.stringify(detail).includes(key));
     assert.equal(first.turns[0].sources[0].text,seed.chunks[0].text);assert.equal(first.budget.model_attempts,2);assert.equal(first.memory.paper_id,"p1");
     assert.equal(first.memory.notes?.[0].source_turn,first.turns[0].turn_id);assert.ok(first.memory.notes?.[0].answer_excerpt.includes('source supports'));assert.equal(first.context?.policy.threshold_percent,80);assert.ok(events.some(event=>event.context?.used_tokens!==null&&event.context?.used_tokens!==undefined));
-    await session.close();session=await PaperWebSession.open(options);const restored=await session.view();
+    await session.close();
+    const savedCheckpoint=await readFile(join(root,'checkpoints',first.turns[0].turn_id+'.json'),'utf8'),beforeLedger=await readdir(join(root,'ledger'));
+    const nextConfig=structuredClone(config);nextConfig.model.model_id='updated-model';nextConfig.session.max_turns=100;nextConfig.session.compaction='native';
+    const upgraded={...options,config:nextConfig,assets:{...assets,implementationId:'e'.repeat(64)}};
+    session=await PaperWebSession.open(upgraded);const restored=await session.view();
     assert.equal(restored.turns.length,1);assert.deepEqual(restored.scope,["p1"]);assert.equal(restored.memory.paper_id,"p1");
     assert.deepEqual(restored.memory.notes,first.memory.notes);assert.equal(restored.context?.basis,'estimate');assert.ok(restored.context!.used_tokens!>0);assert.equal(restored.context?.policy.version,'workbench-context-v2');
     assert.deepEqual(restored.turns[0].activity,first.turns[0].activity);
+    assert.equal(restored.budget.model_attempts,2);assert.equal(restored.budget.max_turns,first.budget.max_turns);assert.deepEqual(await readdir(join(root,'ledger')),beforeLedger);
+    assert.equal(await readFile(join(root,'checkpoints',first.turns[0].turn_id+'.json'),'utf8'),savedCheckpoint);
     const second=await session.ask("And the same fact?");assert.equal(second.turns.length,2);assert.equal(second.budget.turns_reserved,2);assert.equal(second.budget.model_attempts,4);
     await session.close();
+    session=await PaperWebSession.open({...upgraded,assets:{...assets,implementationId:'f'.repeat(64)}});assert.equal((await session.view()).budget.model_attempts,4);await session.close();
     for(const name of await readdir(join(root,"turns"))){const text=await readFile(join(root,"turns",name),"utf8");assert.ok(!text.includes(key));assert.ok(!text.includes("internal_drafts"));assert.ok(!text.includes('"original_response"'));}
   }finally{seed.harness.dispose();await rm(root,{recursive:true,force:true});}
 });

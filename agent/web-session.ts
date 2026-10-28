@@ -5,7 +5,8 @@ import { SessionBudget } from "./budget.ts";
 import { createUserRuntime, containedPath,sha, type AppConfig } from "./config.ts";
 import { RuntimeFailure, redactText, type Paper, type WorkerTransport, type Chunk } from "./contracts.ts";
 import { MainPaperHarness, type MainHarnessOptions } from "./session-main-v2.ts";
-import { unwrapSnapshot, type ControlledSnapshot, type ControlledTurnRecord, type RuntimeControls } from "./main-controls.ts";
+import { type ControlledSnapshot, type ControlledTurnRecord, type RuntimeControls } from "./main-controls.ts";
+import {recoverWebSnapshot} from './web-recovery.ts';
 import { visibleTurn } from "./cli.ts";
 import type { Assets } from "./assets.ts";
 import type { ExecutionEvent } from "./execution-trace.ts";
@@ -113,9 +114,10 @@ export class PaperWebSession implements WebSessionPort {
   }
   static async open(options:{directory:string;assets:Assets;config:AppConfig;worker:WorkerTransport;sources:ReadonlyMap<string,Chunk>;key:string;
     createHarness?:(options:MainHarnessOptions)=>Promise<MainPaperHarness>}):Promise<PaperWebSession>{
-    const b=await SessionBudget.open(options.directory,options.assets.implementationId,options.config.session.max_turns);
+    const b=await SessionBudget.openWeb(options.directory,options.config.session.max_turns);
     const s=new PaperWebSession(options.directory,b,options.assets,options.config,options.worker,options.sources,options.key,options.createHarness);
     try{
+      const validPapers=new Set(options.assets.publicPapers.map(p=>p.paper_id));
       await mkdir(join(options.directory,"turns"),{recursive:true});await mkdir(join(options.directory,"checkpoints"),{recursive:true});await mkdir(join(options.directory,"traces"),{recursive:true});
       for(const turn of b.state.turns){
         if(turn.status!=="finished")continue;
@@ -124,9 +126,11 @@ export class PaperWebSession implements WebSessionPort {
         const saved=JSON.parse(bytes.toString()),snap=await readFile(join(options.directory,"checkpoints",turn.id+".json"));
         if(sha(snap)!==saved.snapshot_sha256)throw new RuntimeFailure("INVALID_SESSION","Saved checkpoint differs");
         const snapshot=JSON.parse(snap.toString()) as ControlledSnapshot;
-        unwrapSnapshot(snapshot,s.controls,s.assets.indexVersion);
-        s.snapshot=snapshot;s.history.push(saved.web_turn);
+        s.snapshot=recoverWebSnapshot(snapshot,s.controls,s.assets.indexVersion,validPapers);s.history.push(saved.web_turn);
       }
+      const scope=b.state.scope.filter(id=>validPapers.has(id));
+      if(scope.length!==b.state.scope.length)await b.setScope(scope);
+      if(b.state.pending_compaction&&options.config.session.compaction==='off')await b.compact(false);
       return s;
     }catch(e){await s.close();throw e;}
   }

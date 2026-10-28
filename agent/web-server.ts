@@ -43,6 +43,7 @@ const STATIC_FILES:Record<string,{file:string;type:string}>={
   ,"/answer-preview.js":{file:"answer-preview.js",type:"text/javascript; charset=utf-8"}
   ,"/reader-follow.js":{file:"reader-follow.js",type:"text/javascript; charset=utf-8"}
   ,"/pdf-citation.js":{file:"pdf-citation.js",type:"text/javascript; charset=utf-8"}
+  ,"/conversations.js":{file:"conversations.js",type:"text/javascript; charset=utf-8"}
 };
 const rendererAssets=JSON.parse(readFileSync(new URL('../web/vendor/render-assets.json',import.meta.url),'utf8')) as {files:string[]};
 for(const name of rendererAssets.files){
@@ -59,8 +60,8 @@ function failure(code:string):{status:number;message:string}{
     NOT_FOUND:{status:404,message:"页面或会话不存在。"},SESSION_LOCKED:{status:409,message:"会话正在处理问题，请稍后再操作。"},
     SESSION_BUDGET_EXCEEDED:{status:429,message:"当前会话已达到轮数上限，请新建会话。"},CAPACITY:{status:429,message:"网站当前较忙，请稍后再试。"},
     TOO_LARGE:{status:413,message:"输入内容过长。"},DEMO_ONLY:{status:409,message:"这里提供示例回放，完整问答请自行部署。"},
-    INVALID_SESSION:{status:409,message:"会话文件无法读取，请新建会话。"},INVALID_BUDGET:{status:409,message:"会话配置已经变化，请新建会话。"},
-    INVALID_SNAPSHOT:{status:409,message:"会话配置已经变化，请新建会话。"}
+    INVALID_SESSION:{status:409,message:"会话记录无法完整读取，原文件已保留。请重试恢复。"},INVALID_BUDGET:{status:409,message:"会话用量记录不完整，原文件已保留。请检查本地会话资料。"},
+    INVALID_SNAPSHOT:{status:409,message:"暂时无法恢复这段会话的上下文，历史记录已保留。"}
     ,INVALID_PATH:{status:403,message:"这个会话的保存位置无法访问。"}
     ,PDF_UNAVAILABLE:{status:502,message:"PDF 暂时无法加载，请重试或打开官方原文。"}
     ,TRANSLATION_FAILED:{status:502,message:"译文暂时未能生成，可重试或查看英文原文。"}

@@ -14,6 +14,13 @@ export class SessionBudget {
   state:BudgetState;
   private constructor(directory:string,lock:FileHandle,state:BudgetState){this.directory=directory;this.lock=lock;this.state=state;}
   static async open(directory:string,implementationId:string,maxTurns:number):Promise<SessionBudget>{
+    return this.openBound(directory,implementationId,maxTurns,false);
+  }
+  /** Product conversations keep their original admission ledger across app/model updates. */
+  static async openWeb(directory:string,maxTurns:number):Promise<SessionBudget>{
+    return this.openBound(directory,sha('astercite-web-budget-v1'),maxTurns,true);
+  }
+  private static async openBound(directory:string,implementationId:string,maxTurns:number,web:boolean):Promise<SessionBudget>{
     if(!Number.isInteger(maxTurns)||maxTurns<1||maxTurns>1000)throw new RuntimeFailure("INVALID_BUDGET","Invalid turn limit");
     await mkdir(join(directory,"ledger"),{recursive:true});
     let lock:FileHandle;
@@ -22,13 +29,17 @@ export class SessionBudget {
     try{
       const files=(await readdir(join(directory,"ledger"))).sort();
       if(files.some(f=>!/^\d{6}\.json$/u.test(f)))throw new RuntimeFailure("INVALID_BUDGET","Unexpected ledger entry");
+      let savedIdentity=implementationId,savedLimit=maxTurns;
       for(const [seq,f] of files.entries()){
-        const bytes=await readFile(join(directory,"ledger",f)),v=JSON.parse(bytes.toString()) as Generation;
+        const bytes=await readFile(join(directory,"ledger",f));let v:Generation;
+        try{v=JSON.parse(bytes.toString()) as Generation;}catch{throw new RuntimeFailure('INVALID_BUDGET','Unreadable ledger entry');}
+        if(web&&seq===0){savedIdentity=v?.state?.implementation_id;savedLimit=v?.state?.max_turns;}
+        if(!v?.state||typeof savedIdentity!=='string'||!/^[a-f0-9]{64}$/u.test(savedIdentity)||!Number.isInteger(savedLimit)||savedLimit<1||savedLimit>1000)throw new RuntimeFailure('INVALID_BUDGET','Invalid saved session identity or limit');
         if(f!==String(seq).padStart(6,"0")+".json" || v.sequence!==seq || v.previous_sha256!==budget.previousHash ||
-           v.state.implementation_id!==implementationId || v.state.max_turns!==maxTurns || v.state.version!==1 ||
+           v.state.implementation_id!==savedIdentity || v.state.max_turns!==savedLimit || v.state.version!==1 ||
            typeof v.state.pending_compaction!=="boolean" || !Array.isArray(v.state.scope) || v.state.scope.some(p=>typeof p!=="string") ||
-           v.state.turns.length>maxTurns || new Set(v.state.turns.map(t=>t.id)).size!==v.state.turns.length ||
-           v.state.turns.some(t=>!/^[-a-zA-Z0-9_]{1,100}$/u.test(t.id) || !/^[a-f0-9]{64}$/u.test(t.question_sha256) || t.requests.length>12 ||
+           !Array.isArray(v.state.turns) || v.state.turns.length>savedLimit || new Set(v.state.turns.map(t=>t?.id)).size!==v.state.turns.length ||
+           v.state.turns.some(t=>!t || !/^[-a-zA-Z0-9_]{1,100}$/u.test(t.id) || !/^[a-f0-9]{64}$/u.test(t.question_sha256) || !Array.isArray(t.requests) || t.requests.length>12 || t.requests.some(id=>typeof id!=='string') ||
              new Set(t.requests).size!==t.requests.length || !["reserved","finished"].includes(t.status)))
           throw new RuntimeFailure("INVALID_BUDGET","Ledger identity, count or chain differs");
         if(seq>0) {

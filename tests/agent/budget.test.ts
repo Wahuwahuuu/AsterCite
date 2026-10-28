@@ -33,3 +33,17 @@ test("scope and scheduled compaction persist between ordinary CLI opens",async()
     b=await SessionBudget.open(root,identity,2);assert.deepEqual(b.state.scope,["paper1"]);assert.equal(b.state.pending_compaction,true);}
   finally{await b?.close();await rm(root,{recursive:true,force:true});}
 });
+test('web recovery keeps a legacy ledger identity, its original limit, and every admitted request after an update',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'astercite-web-budget-'));let b:SessionBudget|undefined;
+  try{
+    b=await SessionBudget.open(root,identity,4);await b.reserve('failed','old question');for(let i=0;i<12;i++)await b.admit('failed','request-'+i);await b.close();b=undefined;
+    const before=await readdir(join(root,'ledger'));
+    b=await SessionBudget.openWeb(root,100);assert.equal(b.state.implementation_id,identity);assert.equal(b.summary().max_turns,4);assert.equal(b.summary().model_attempts,12);
+    assert.deepEqual(await readdir(join(root,'ledger')),before);await assert.rejects(b.admit('failed','extra'),/admission/);
+    await b.reserve('next','new question');await b.admit('next','new-request');await b.close();b=undefined;
+    b=await SessionBudget.openWeb(root,1);assert.equal(b.summary().turns_reserved,2);assert.equal(b.summary().remaining_turns,2);assert.equal(b.summary().model_attempts,13);await b.close();b=undefined;
+    await assert.rejects(SessionBudget.open(root,'c'.repeat(64),4),/identity/);
+    const files=(await readdir(join(root,'ledger'))).sort(),path=join(root,'ledger',files.at(-1)!);const value=JSON.parse(await readFile(path,'utf8'));value.previous_sha256='broken';await writeFile(path,JSON.stringify(value));
+    await assert.rejects(SessionBudget.openWeb(root,100),/chain/);
+  }finally{await b?.close();await rm(root,{recursive:true,force:true});}
+});
