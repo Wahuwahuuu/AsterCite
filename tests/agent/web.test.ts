@@ -138,7 +138,7 @@ test("website adapter runs the existing Harness, saves citations and restores me
     await assert.rejects(session.configure(["not-in-corpus"],false),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_SCOPE");
     await assert.rejects(session.configure(["p1"],true),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_CONFIG");
     const events:WebActivity[]=[];
-    const first=await session.ask("p1 requested fact",event=>events.push(event));assert.equal(first.turns[0].status,"completed");
+    const first=await session.ask("p1 requested fact "+key,event=>events.push(event));assert.equal(first.turns[0].status,"completed");assert.ok(!JSON.stringify(first).includes(key));
     assert.ok(events.some(e=>e.kind==="model"&&e.status==="running"));
     assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.status==="completed"));
     assert.equal(events.at(-1)?.kind,"memory");assert.equal(events.at(-1)?.status,"completed");
@@ -148,8 +148,10 @@ test("website adapter runs the existing Harness, saves citations and restores me
     const firstModel=events.find(e=>e.kind==="model")!;
     const detail=await session.detail(first.turns[0].turn_id!,firstModel.id);assert.ok(detail?.input);assert.ok(detail?.output);assert.ok(!JSON.stringify(detail).includes(key));
     assert.equal(first.turns[0].sources[0].text,seed.chunks[0].text);assert.equal(first.budget.model_attempts,2);assert.equal(first.memory.paper_id,"p1");
+    assert.equal(first.memory.notes?.[0].source_turn,first.turns[0].turn_id);assert.ok(first.memory.notes?.[0].answer_excerpt.includes('source supports'));assert.equal(first.context?.policy.threshold_percent,80);assert.ok(events.some(event=>event.context?.used_tokens!==null&&event.context?.used_tokens!==undefined));
     await session.close();session=await PaperWebSession.open(options);const restored=await session.view();
     assert.equal(restored.turns.length,1);assert.deepEqual(restored.scope,["p1"]);assert.equal(restored.memory.paper_id,"p1");
+    assert.deepEqual(restored.memory.notes,first.memory.notes);assert.deepEqual(restored.context?.used_tokens,first.context?.used_tokens);
     assert.deepEqual(restored.turns[0].activity,first.turns[0].activity);
     const second=await session.ask("And the same fact?");assert.equal(second.turns.length,2);assert.equal(second.budget.turns_reserved,2);assert.equal(second.budget.model_attempts,4);
     await session.close();

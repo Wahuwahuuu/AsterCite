@@ -13,7 +13,7 @@ const str=(v:unknown)=>typeof v==="string"?v:"";
 export function traceArguments(value:unknown):Record<string,unknown>{
   let raw=value;if(typeof raw==="string")try{raw=JSON.parse(raw);}catch{return {invalid_json:true};}
   const source=obj(raw),result:Record<string,unknown>={};
-  for(const key of ["query","paper_ids","top_k","limit"]){if(Object.hasOwn(source,key))result[key]=source[key];}return result;
+  for(const key of ["query","paper_ids","top_k","limit","section"]){if(Object.hasOwn(source,key))result[key]=source[key];}return result;
 }
 function calls(v:unknown):TraceOutput["tool_calls"]{
   return Array.isArray(v)?v.flatMap(raw=>{const b=obj(raw),f=obj(b.function);const name=str(f.name)||str(b.name);if(!["search_papers","retrieve_chunks"].includes(name))return [];

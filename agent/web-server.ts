@@ -9,12 +9,14 @@ import { RuntimeFailure, type Paper, type Chunk } from "./contracts.ts";
 import { PaperWebSession,readSavedTrace, type WebSessionFactory, type WebSessionPort } from "./web-session.ts";
 import { PaperPdfCache, originalPdfUrl } from "./paper-pdf.ts";
 import { SourceTranslation,type SourceTranslator } from "./source-translation.ts";
+import {ContextTracker,type ContextView} from './workbench-context.ts';
 
 export interface WebServerOptions {
   root:string; mode:"demo"|"live"; factory?:WebSessionFactory; papers?:readonly Paper[];
   modelLabel?:string; accessToken?:string; publicOrigin?:string; maxSessions?:number;
   pdfFetch?:typeof fetch;
   translate?:SourceTranslator;
+  context?:ContextView;
 }
 const STATIC_FILES:Record<string,{file:string;type:string}>={
   "/":{file:"index.html",type:"text/html; charset=utf-8"},
@@ -35,6 +37,7 @@ const STATIC_FILES:Record<string,{file:string;type:string}>={
   ,"/trace-view.js":{file:"trace-view.js",type:"text/javascript; charset=utf-8"}
   ,"/trace-inspector.js":{file:"trace-inspector.js",type:"text/javascript; charset=utf-8"}
   ,"/trace.css":{file:"trace.css",type:"text/css; charset=utf-8"}
+  ,"/session-panel.js":{file:"session-panel.js",type:"text/javascript; charset=utf-8"}
 };
 const safeEqual=(a:string,b:string)=>timingSafeEqual(Buffer.from(sha(a),"hex"),Buffer.from(sha(b),"hex"));
 function failure(code:string):{status:number;message:string}{
@@ -88,7 +91,7 @@ export async function createWebServer(options:WebServerOptions){
       if(url.search)throw new RuntimeFailure("INVALID_INPUT","Query not supported");
       if(method==="GET"&&url.pathname==="/healthz"){json(res,200,{status:"ok",mode:options.mode});return;}
       if(method==="GET"&&url.pathname==="/api/config"){
-        json(res,200,{mode:options.mode,model:options.modelLabel??null,access_token_required:!!options.accessToken,
+        json(res,200,{mode:options.mode,model:options.modelLabel??null,context:options.context??null,access_token_required:!!options.accessToken,
           papers:papers?.map(p=>({paper_id:p.paper_id,title:p.title,pdf_url:originalPdfUrl(p.paper_id)}))??[]});return;
       }
       if(method==="GET"&&STATIC_FILES[url.pathname]){
@@ -204,7 +207,7 @@ export async function startWeb(args:string[],root=PROJECT_ROOT){
       const sourceRows=(await readFile(join(root,config.retrieval.index_dir,"chunks.jsonl"),"utf8")).split(/\r?\n/u).filter(Boolean).map(s=>JSON.parse(s) as Chunk);
       const sources=new Map(sourceRows.map(c=>[c.chunk_id,c]));
       options.factory=directory=>PaperWebSession.open({directory,assets,config,worker:worker!,sources,key});
-      options.papers=assets.publicPapers;options.modelLabel=config.model.model_id;
+      options.papers=assets.publicPapers;options.modelLabel=config.model.model_id;options.context=new ContextTracker().view(config.model.context_window,config.session.compaction==='native');
       const translator=new SourceTranslation(root,config,key);options.translate=(sources,directory,turnId)=>translator.translate(sources,directory,turnId);
     }
     const server=await createWebServer(options);

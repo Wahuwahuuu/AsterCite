@@ -14,12 +14,14 @@ export interface ConclusionCandidate {
   id: string; need_id: string; text: string; source_turn: string; basis: "explicit" | "in_scope_inference";
   source_status: "verified" | "stale"; semantic_status: "pending"; sources: SourceBinding[];
 }
+export interface ReadingNote {source_turn:string;question:string;answer_excerpt:string;excerpt_truncated:boolean;paper_ids:string[];citations:string[];status:string}
 export interface DomainState {
   version: 1; index_version: string; current_paper: { paper_id: string; source_turn: string } | null;
   comparison_order: string[]; comparison_dimensions: string[]; object_source_turn: string | null;
   user_constraints: UserConstraint[]; conclusions: ConclusionCandidate[];
   pending_inferences: Array<{ text: string; source_turn: string; reason: string }>;
   unresolved_questions: Array<{ need_id: string; text: string; gap: string; source_turn: string }>;
+  reading_notes?:ReadingNote[];
 }
 const hash = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -44,6 +46,18 @@ export class DomainMemory {
     }
   }
   activeConstraints(): UserConstraint[] { return this.state.user_constraints.filter((entry) => entry.superseded_by === null); }
+
+  rememberAnswer(turn:string,question:string,answer:string,paperIds:readonly string[],citations:readonly string[],status:string):void{
+    if(paperIds.length){
+      this.state.object_source_turn=turn;
+      this.state.current_paper=paperIds.length===1?{paper_id:paperIds[0],source_turn:turn}:null;
+      this.state.comparison_order=paperIds.length>1?[...paperIds]:[];
+      if(paperIds.length===1)this.state.comparison_dimensions=[];
+    }
+    const chars=Array.from(answer);
+    const note:ReadingNote={source_turn:turn,question:Array.from(question).slice(0,512).join(''),answer_excerpt:chars.slice(0,1200).join(''),excerpt_truncated:chars.length>1200,paper_ids:[...paperIds],citations:[...citations],status};
+    this.state.reading_notes=[...(this.state.reading_notes??[]).filter(item=>item.source_turn!==turn),note].slice(-4);
+  }
 
   applyFrame(frame: FullFrame, turn: string): void {
     for (const update of frame.constraints) if (update.replaces && !this.activeConstraints().some((old) => old.key === update.replaces)) {
@@ -104,12 +118,13 @@ export class DomainMemory {
       comparison_order: this.state.comparison_order, comparison_dimensions: this.state.comparison_dimensions,
       user_constraints: this.activeConstraints(), conclusion_candidates: this.state.conclusions.filter((entry) => entry.source_status === "verified").slice(-24),
       pending_inferences: this.state.pending_inferences.slice(-12), unresolved_questions: this.state.unresolved_questions,
+      ...(this.state.reading_notes?{reading_notes:this.state.reading_notes}:{}),
       instruction: "User constraints are user claims. Source spans are located; all model findings have pending semantics. Only separately visible source text permits citations; memory is not verified paper truth." };
   }
 
   summary(dialogue: readonly DialogueRecord[], useDomain: boolean): string {
     return JSON.stringify({ source: "pipaper_deterministic_compaction_v1", generation: "host_projection_no_model",
-      conversation_only: dialogue.slice(-8).map((entry) => ({ ...entry, final_answer: Array.from(entry.final_answer).slice(0, 1200).join("") })),
+      conversation_only: this.state.reading_notes?dialogue.slice(-4).map(entry=>({turn_id:entry.turn_id,user_text:Array.from(entry.user_text).slice(0,512).join('')})):dialogue.slice(-8).map((entry) => ({ ...entry, final_answer: Array.from(entry.final_answer).slice(0, 1200).join("") })),
       ...(useDomain ? { domain_memory: this.projection() } : {}),
       evidence_rule: "Previous assistant answers and user assumptions are conversation only. Every conclusion remains semantic_status=pending. Citations require currently visible independently located source text." });
   }

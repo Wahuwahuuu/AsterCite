@@ -33,7 +33,7 @@
       </div>
       <div class="composer-area"><div class="scope-row"><span>论文范围</span><button id="scope-all" class="scope-chip selected">全部论文</button><span id="selected-scope"></span><span id="budget-hint" class="budget-hint"></span></div>
         <form id="question-form" class="composer"><label class="sr-only" for="question">输入论文问题</label><textarea id="question" rows="2" maxlength="24000" placeholder="输入你的论文问题，可以继续追问…"></textarea><div class="composer-toolbar"><button type="button" id="compact" class="icon-text-button" title="在下一次提问时压缩上下文">压缩上下文</button><span id="input-hint">Enter 发送 · Shift + Enter 换行</span><button id="send" type="submit" class="send-button"><span id="send-label">发送问题</span><span aria-hidden="true">↑</span></button></div></form>
-        <p id="mode-note" class="mode-note">示例使用已保存的问答。部署后可自由提问。</p><div id="notice" role="status" class="notice" hidden></div>
+        <button type="button" id="context-open" class="context-meter" hidden><span class="context-meter-track"><progress id="context-progress" max="100" value="0"></progress><span class="context-threshold" aria-hidden="true"></span></span><span id="context-label">上下文用量待连接</span><span aria-hidden="true">↗</span></button><p id="mode-note" class="mode-note">示例使用已保存的问答。部署后可自由提问。</p><div id="notice" role="status" class="notice" hidden></div>
       </div>
     </section>
     <aside class="evidence-panel" aria-label="论文阅读与引用">
@@ -51,7 +51,8 @@
 cd AsterCite
 npm ci --ignore-scripts
 npm run web</code></pre></div><div id="live-guide" hidden><p>下载 Windows 安装版，从开始菜单启动 AsterCite。首次准备后，填写自己的模型服务地址、模型名称和密钥，浏览器会自动打开。</p><p>安装包附带论文和完整运行环境，检索在本机进行。关闭服务窗口后，再次启动可继续已保存的会话。</p><p><a href="https://github.com/Wahuwahuuu/AsterCite/releases/latest" target="_blank" rel="noopener noreferrer">下载 Windows x64 安装版 ↗</a></p></div><div class="modal-links"><a href="https://github.com/Wahuwahuuu/AsterCite/blob/main/docs/web.md" target="_blank" rel="noopener noreferrer">网页部署指南 ↗</a><a href="https://github.com/Wahuwahuuu/AsterCite/blob/main/docs/windows.md" target="_blank" rel="noopener noreferrer">安装使用指南 ↗</a></div></dialog>
-  <dialog id="memory-dialog" class="modal"><form method="dialog"><button class="modal-close" aria-label="关闭会话记忆">×</button></form><h2>当前会话记忆</h2><div id="memory-content"></div></dialog>
+  <dialog id="memory-dialog" class="modal session-dialog"><form method="dialog"><button class="modal-close" aria-label="关闭会话记忆">×</button></form><h2>当前会话记忆</h2><div id="memory-content"></div></dialog>
+  <dialog id="compression-dialog" class="modal session-dialog"><form method="dialog"><button class="modal-close" aria-label="关闭上下文与压缩">×</button></form><h2>上下文与压缩</h2><div id="compression-content"></div></dialog>
   <dialog id="access-dialog" class="modal"><h2>连接问答服务</h2><p>填写这个自部署网站的访问口令。</p><form id="access-form"><label for="access-token">访问口令</label><input id="access-token" type="password" autocomplete="off" required><button type="submit" class="primary-button">连接</button></form></dialog>
   <noscript>请启用 JavaScript 以查看论文问答和引用。项目源码：https://github.com/Wahuwahuuu/AsterCite</noscript>
 </body>

@@ -18,6 +18,7 @@ import { traceInput,traceOutput,traceArguments,type ExecutionEvent } from "./exe
 import { selectedTargets,coverageInstruction,validateCoverage } from "./selected-scope.ts";
 import {abstractReadingSection,groundedGenerationMessages,withAbstractReading} from './paper-reading.ts';
 import {prepareWorkbenchAnswer,preferWorkbenchAnswer,workbenchCoverageInstruction,workbenchSystemPrompt,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer} from "./workbench-answer.ts";
+import {ContextTracker,compactionPolicy,estimateVisibleContext,type ContextView} from './workbench-context.ts';
 
 // Versioned main controls; historical prepared/session implementations remain frozen.
 
@@ -112,6 +113,7 @@ export class MainPaperHarness {
   readonly memory: DomainMemory;
   private dialogue: DialogueRecord[] = [];
   private compactBeforeNextTurn = false;
+  private contextTracker:ContextTracker;
   private autonomousPreparation = false;
   private selectedRequired:string[]=[];
   private workbenchBest:{answer:WorkbenchAnswer;request:RequestRecord|undefined;evidence:Map<string,Chunk>}|undefined;
@@ -133,6 +135,7 @@ export class MainPaperHarness {
     this.settings = settings;
     this.options = options;
     this.memory = new DomainMemory(options.p2?.indexVersion ?? "unknown", options.snapshot?.domain_state);
+    this.contextTracker=new ContextTracker(options.snapshot?.context_state);
     if (options.snapshot) {
       this.dialogue = structuredClone(options.snapshot.dialogue);
       this.finalAnswers = new Set(options.snapshot.final_signatures);
@@ -160,13 +163,16 @@ export class MainPaperHarness {
         } catch { if (!options.p2) void session.abort(); }
       }
       if (event.type === "compaction_start") {
+        if(this.workbench)this.contextTracker.begin(event.reason,this.contextSize(),this.session.messages.length);
         ledger.phase = "compaction";
         ledger.record.compaction_events.push({ type: "start", reason: event.reason });
       }
       if (event.type === "compaction_end") {
+        const unchanged=Boolean(event.errorMessage&&/Nothing to compact|Already compacted|session too small/iu.test(event.errorMessage));
+        if(this.workbench)this.contextTracker.end(this.contextSize(),this.session.messages.length,event.result?.summary??'',unchanged?'unchanged':event.errorMessage||event.aborted?'error':'completed',unchanged?'近期内容较少，已按相同保留策略保留原上下文。':event.errorMessage||event.aborted?'本次压缩未完成，原会话保留。':'已整理早期上下文并保留近期对话。');
         ledger.phase = "agent";
         ledger.record.compaction_events.push({ type: "end", reason: event.reason, aborted: event.aborted });
-        if (event.errorMessage) ledger.fail("COMPACTION_ERROR", new Error(event.errorMessage));
+        if (event.errorMessage&&!(this.workbench&&unchanged)) ledger.fail("COMPACTION_ERROR", new Error(event.errorMessage));
       }
       if (event.type === "tool_execution_end") {
         ledger.endTool(event.toolCallId, event.isError);
@@ -214,7 +220,7 @@ export class MainPaperHarness {
     };
     const settings = SettingsManager.inMemory({ cacheWarming: "off", retry: { enabled: false, maxRetries: 0,
       provider: { maxRetries: 0, timeoutMs: options.requestTimeoutMs ?? 90_000 } }, transport: "sse",
-      compaction: { enabled: controls.compaction === "native" }, enableSkillCommands: false,
+      compaction: { enabled: controls.compaction === "native",...(options.answerPolicy==='workbench-v1'?{reserveTokens:compactionPolicy(options.model.contextWindow).reserve_tokens,keepRecentTokens:compactionPolicy(options.model.contextWindow).keep_recent_tokens}:{}) }, enableSkillCommands: false,
       enableInstallTelemetry: false, enableAnalytics: false });
     const { session, extensionsResult } = await createAgentSession({ cwd, agentDir: join(cwd, ".runtime", "pi"),
       model: options.model, thinkingLevel: options.model.reasoning ? options.thinkingLevel ?? "low" : "off", modelRuntime: options.modelRuntime,
@@ -257,6 +263,7 @@ export class MainPaperHarness {
         catch (error) { request.status = "error"; request.error = ledger.errorText(error); ledger.fail("INVALID_AUTHORIZATION", error); throw error; }
       }
       const started = Date.now();
+      if(this.workbench&&request.phase==='agent')this.contextTracker.request(traceInput(providerContext,'sdk_context',this.options.secrets),request.stage??'agent');
       if(this.options.onExecutionEvent)this.trace({id:request.request_id,kind:"model",status:"running",stage:request.stage??"agent",phase:request.phase,input:traceInput(providerContext,"sdk_context",this.options.secrets)});
       const timeout = AbortSignal.timeout(this.options.requestTimeoutMs ?? 90_000);
       const signals = [options?.signal, this.turnController?.signal, timeout].filter((item): item is AbortSignal => item !== undefined);
@@ -273,7 +280,7 @@ export class MainPaperHarness {
               ledger.fail(failure.code, failure); throw failure;
             }
             request.http_attempts++;
-            if(this.options.onExecutionEvent&&typeof init?.body==="string")try{this.trace({id:request.request_id,kind:"model",status:"running",stage:request.stage??"agent",phase:request.phase,input:traceInput(JSON.parse(init.body),"provider_payload",this.options.secrets)});}catch{/* Non-JSON transports retain the SDK projection. */}
+            if(typeof init?.body==="string")try{const input=traceInput(JSON.parse(init.body),'provider_payload',this.options.secrets);if(this.workbench&&request.phase==='agent')this.contextTracker.request(input,request.stage??'agent');if(this.options.onExecutionEvent)this.trace({id:request.request_id,kind:"model",status:"running",stage:request.stage??"agent",phase:request.phase,input});}catch{/* Non-JSON transports retain the SDK projection. */}
             return nativeFetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal });
           },
           onResponse: async (response, requestModel) => {
@@ -288,6 +295,7 @@ export class MainPaperHarness {
         const completion = response.result().then((message) => {
           if (timeout.aborted) ledger.fail("REQUEST_TIMEOUT", new RuntimeFailure("REQUEST_TIMEOUT", "Model request timed out"));
           ledger.endRequest(request, message, started);
+          if(this.workbench&&request.phase==='agent'&&!['error','aborted'].includes(message.stopReason))this.contextTracker.response(request.usage,request.stage??'agent');
           if(this.options.onExecutionEvent)this.trace({id:request.request_id,kind:"model",status:["error","aborted"].includes(message.stopReason)?"error":"completed",stage:request.stage??"agent",phase:request.phase,output:traceOutput(message,this.options.secrets),elapsed_ms:Date.now()-started});
           if (request.phase === "agent") this.lastMainRequest = request;
         }).catch((error: unknown) => {
@@ -840,10 +848,11 @@ Complete this retrieval batch through the declared tools. If separate queries ar
         if (this.compactBeforeNextTurn) {
           this.compactBeforeNextTurn = false;
           const natural=this.settings.getCompactionSettings();
-          ledger.record.compaction_control={trigger:"host_planned",keep_recent_tokens:50,natural_settings_restored:false};
-          this.settings.applyOverrides({compaction:{...natural,keepRecentTokens:50}});
+          ledger.record.compaction_control={trigger:"host_planned",keep_recent_tokens:this.workbench?natural.keepRecentTokens:50,natural_settings_restored:false};
+          if(!this.workbench)this.settings.applyOverrides({compaction:{...natural,keepRecentTokens:50}});
           try {await this.session.compact();}
-          finally {this.settings.applyOverrides({compaction:natural});ledger.record.compaction_control.natural_settings_restored=true;}
+          catch(error){if(!this.workbench||!/Nothing to compact|Already compacted|session too small/iu.test(errorText(error,this.options.secrets)))throw error;}
+          finally {this.settings.applyOverrides({compaction:natural});ledger.record.compaction_control!.natural_settings_restored=true;}
         }
         this.dialogue.push({ turn_id: userTurnId, user_text: userText, final_answer: "" });
       }
@@ -882,6 +891,12 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       batch.new_chunk_ids = [...new Set(tools.flatMap(tool => tool.chunk_ids))].filter(id => !this.autonomousEvidenceBefore.has(id));
     }
     const result = ledger.finish(answer);
+    if(this.workbench&&!ledger.failureCode&&this.retainedWorkbenchAnswer()){
+      const factual=this.retainedWorkbenchAnswer()!.answer.value.answer_kind==='paper_fact';
+      const linked=[...new Set(cited.flatMap(id=>this.lastMainEvidence.has(id)?[this.lastMainEvidence.get(id)!.paper_id]:[]))];
+      const objects=this.selectedRequired.length>1?this.selectedRequired:linked.length?linked:factual?(this.frame as FullFrame|undefined)?.ordered_targets??[]:[];
+      this.memory.rememberAnswer(userTurnId,userText,answer,objects,cited,ledger.record.business_status??'answer');
+    }
     const accepted=this.retainedWorkbenchAnswer();
     if(this.workbench&&accepted&&!ledger.failureCode){
       const original=accepted.answer.original;
@@ -915,6 +930,9 @@ Complete this retrieval batch through the declared tools. If separate queries ar
 
   dispose(): void { this.session.dispose(); }
 
+  private contextSize():number{return estimateVisibleContext({messages:convertToLlm(this.session.messages),systemPrompt:this.session.agent.state.systemPrompt+'\n'+JSON.stringify(this.memory.projection()),tools:this.session.agent.state.tools});}
+  contextView():ContextView{return this.contextTracker.view(this.options.model.contextWindow,this.session.autoCompactionEnabled);}
+
   /** Scheduling is host-only; Pi compaction executes within the next turn's ledger. */
   requestCompaction(): void {
     if (!this.full || this.options.controls.compaction !== "native") throw new RuntimeFailure("INVALID_CONFIG", "Controlled compaction requires the native compression arm");
@@ -926,7 +944,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     if (!this.full || this.ledger) throw new RuntimeFailure("INVALID_SNAPSHOT", "Only an idle full-v1 session can be snapshotted");
     const snapshot = { version: 1 as const, profile: this.options.p2!.profile, index_version: this.options.p2!.indexVersion,
       entries: safeSessionEntries(this.session.sessionManager, this.finalAnswers, this.options.secrets ?? []),
-      domain_state: this.memory.state, dialogue: this.dialogue, final_signatures: [...this.finalAnswers],...(this.workbench?{answer_policy:'workbench-v1' as const}:{}) };
+      domain_state: this.memory.state, dialogue: this.dialogue, final_signatures: [...this.finalAnswers],...(this.workbench?{answer_policy:'workbench-v1' as const,context_state:this.contextTracker.state}:{}) };
     return wrapSnapshot(JSON.parse(snapshotJSON(snapshot, this.options.secrets ?? [])) as SessionSnapshot, this.options.controls);
   }
 }

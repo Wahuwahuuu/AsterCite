@@ -108,7 +108,7 @@ export interface TurnRecord {
   profile?: "A" | "B";
   execution_surface?: "cli"|"batch";
   session_recovery?: { snapshot_revalidated:true; index_version:string; recovered_dialogue_turns:number; native_compaction_entries:number };
-  compaction_control?: { trigger:"host_planned"; keep_recent_tokens:50; natural_settings_restored:boolean };
+  compaction_control?: { trigger:"host_planned"; keep_recent_tokens:number; natural_settings_restored:boolean };
   components?: { nlu: boolean; reflect: boolean; structured_memory: boolean };
   final_request_id?: string | null;
   internal_drafts?: string[];

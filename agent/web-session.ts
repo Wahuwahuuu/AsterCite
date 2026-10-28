@@ -11,16 +11,19 @@ import type { Assets } from "./assets.ts";
 import type { ExecutionEvent } from "./execution-trace.ts";
 import type { PaperCoverage } from "./selected-scope.ts";
 import {corpusAbstracts} from './paper-reading.ts';
+import {ContextTracker,type ContextView} from './workbench-context.ts';
+import type {ReadingNote} from './domain-memory.ts';
 
 export interface WebSource { chunk_id:string; paper_id:string; title:string; section:string; text:string }
 export interface WebExecutionDetail extends ExecutionEvent {turn_id:string;cycle:number;elapsed_ms:number;turn_elapsed_ms:number;started_at:string}
-export interface WebActivity { id:string; kind:"model"|"tool"|"memory"|"compaction"; status:"running"|"completed"|"error"; label:string; detail:string; elapsed_ms:number; tool?:"search_papers"|"retrieve_chunks";turn_id?:string;cycle?:number;parent_id?:string;origin?:"model"|"host_plan";has_details?:boolean }
+export interface WebActivity { id:string; kind:"model"|"tool"|"memory"|"compaction"; status:"running"|"completed"|"error"; label:string; detail:string; elapsed_ms:number; tool?:"search_papers"|"retrieve_chunks";turn_id?:string;cycle?:number;parent_id?:string;origin?:"model"|"host_plan";has_details?:boolean;context?:ContextView }
 export type ProgressListener=(activity:WebActivity)=>void;
 export interface WebTurn { question:string; answer:string; status:string; sources:WebSource[]; elapsed_ms:number; requests:number; tokens:number|null; stages:Array<{stage:string;status:string}>; activity?:WebActivity[];turn_id?:string;coverage?:PaperCoverage[] }
 export interface WebView {
   turns:WebTurn[]; scope:string[]; pending_compaction:boolean;
   budget:ReturnType<SessionBudget["summary"]>;
-  memory:{paper_id:string|null;comparison:string[];dimensions:string[];preferences:Array<{key:string;value:string}>};
+  memory:{paper_id:string|null;comparison:string[];dimensions:string[];preferences:Array<{key:string;value:string;source_turn?:string;source_quote?:string}>;notes?:ReadingNote[];unresolved?:Array<{text:string;gap:string;source_turn:string}>;findings?:Array<{text:string;source_turn:string}>;inferences?:Array<{text:string;source_turn:string}>;object_source_turn?:string|null};
+  context?:ContextView;
 }
 export interface WebSessionPort {
   view():Promise<WebView>;
@@ -92,7 +95,7 @@ export class PaperWebSession implements WebSessionPort {
     const item=JSON.parse(redactText(JSON.stringify({...value,elapsed_ms:Date.now()-this.activityStarted}),[this.key])) as WebActivity;
     const index=this.activity.findIndex(e=>e.id===item.id);
     if(index>=0)this.activity[index]=item;else if(this.activity.length<100)this.activity.push(item);else return;
-    try{this.onProgress?.(structuredClone(item));}catch{/* A closed viewer must not alter a model run. */}
+    try{this.onProgress?.(JSON.parse(redactText(JSON.stringify({...item,context:this.harness?.contextView()}),[this.key])));}catch{/* A closed viewer must not alter a model run. */}
   }
   private createHarness?: (options:MainHarnessOptions)=>Promise<MainPaperHarness>;
   private constructor(directory:string,budget:SessionBudget,assets:Assets,config:AppConfig,
@@ -140,15 +143,16 @@ export class PaperWebSession implements WebSessionPort {
         const item=[...this.activity].reverse().find(e=>e.kind==="model"&&e.status==="running");if(item)this.emit({...item,detail:"模型正在思考，可查看本次输入上下文"});
       }
       if(event.type==="compaction_start")this.emit({id:"compaction",kind:"compaction",status:"running",label:"压缩会话上下文",detail:"保留对话目标与关键记忆"});
-      if(event.type==="compaction_end")this.emit({id:"compaction",kind:"compaction",status:event.aborted||event.errorMessage?"error":"completed",label:"压缩会话上下文",detail:event.aborted||event.errorMessage?"压缩未完成":"上下文已整理"});
+      if(event.type==="compaction_end"){const record=this.harness?.contextView().compressions.at(-1);this.emit({id:"compaction",kind:"compaction",status:record?.status==='unchanged'?'completed':event.aborted||event.errorMessage?"error":"completed",label:"压缩会话上下文",detail:record?.note??'上下文已整理'});}
     });
     return this.harness;
   }
   async view():Promise<WebView>{
     const state=this.harness?.memory.state??this.snapshot?.state.domain_state;
-    return {turns:structuredClone(this.history),scope:[...this.budget.state.scope],pending_compaction:this.budget.state.pending_compaction,
-      budget:this.budget.summary(),memory:{paper_id:state?.current_paper?.paper_id??null,comparison:state?.comparison_order??[],dimensions:state?.comparison_dimensions??[],
-        preferences:state?.user_constraints.filter(p=>p.superseded_by===null).map(p=>({key:p.key,value:p.value}))??[]}};
+    const view:WebView={turns:structuredClone(this.history),scope:[...this.budget.state.scope],pending_compaction:this.budget.state.pending_compaction,
+      budget:this.budget.summary(),context:this.harness?.contextView()??new ContextTracker(this.snapshot?.state.context_state).view(this.config.model.context_window,this.config.session.compaction==='native'),memory:{paper_id:state?.current_paper?.paper_id??null,comparison:state?.comparison_order??[],dimensions:state?.comparison_dimensions??[],
+        preferences:state?.user_constraints.filter(p=>p.superseded_by===null).map(p=>({key:p.key,value:p.value,source_turn:p.source_turn,source_quote:p.source_quote}))??[],notes:structuredClone(state?.reading_notes??[]),unresolved:structuredClone(state?.unresolved_questions??[]),findings:state?.conclusions.filter(item=>item.source_status==='verified').slice(-24).map(item=>({text:item.text,source_turn:item.source_turn}))??[],inferences:state?.pending_inferences.slice(-12).map(item=>({text:item.text,source_turn:item.source_turn}))??[],object_source_turn:state?.object_source_turn??null}};
+    return JSON.parse(redactText(JSON.stringify(view),[this.key])) as WebView;
   }
   async configure(scope:string[],compact:boolean):Promise<WebView>{
     if(this.busy||this.closed)throw new RuntimeFailure("SESSION_LOCKED","Session is busy");

@@ -2,10 +2,11 @@ import {parseEvidenceText,evidencePreview} from './evidence-format.js';
 import {ActivityPanel,readQuestionStream} from './activity.js';
 import {PaperReader} from './paper-reader.js';
 import {TraceInspector} from './trace-inspector.js';
+import {SessionPanel} from './session-panel.js';
 
 const $=id=>document.getElementById(id);
 const make=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-const state={mode:'demo',papers:[],sample:null,turns:[],scope:[],pending_compaction:false,memory:null,budget:null,busy:false,active:null,accessToken:'',demoIndex:-1,sessions:[],sourceTurn:-1};
+const state={mode:'demo',papers:[],sample:null,turns:[],scope:[],pending_compaction:false,memory:null,context:null,initialContext:null,budget:null,busy:false,active:null,accessToken:'',demoIndex:-1,sessions:[],sourceTurn:-1};
 const STORAGE='astercite.web.sessions.v1';
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const inspector=new TraceInspector();
@@ -18,6 +19,11 @@ function inspectTurn(turn,live=false){
   },{live});
 }
 const activity=new ActivityPanel($('agent-activity'),()=>inspectTurn(activity.snapshot(),true));
+const sessionPanel=new SessionPanel({onSchedule:compact=>settings(state.scope,compact),onPaper:id=>openPdf(id),onJump:id=>{
+  for(const name of ['memory-dialog','compression-dialog'])if($(name).open)$(name).close();
+  const turn=[...document.querySelectorAll('[data-turn-id]')].find(item=>item.dataset.turnId===id);if(turn){turn.scrollIntoView({behavior:'smooth',block:'start'});turn.classList.add('memory-highlight');setTimeout(()=>turn.classList.remove('memory-highlight'),2000);}else notice('这条摘记来自更早的对话，当前记录中未找到对应回答。');
+}});
+function renderSessionPanels(){sessionPanel.update({mode:state.mode,papers:state.papers,turns:state.turns,memory:state.memory,context:state.context,pending:state.pending_compaction,busy:state.busy});}
 const reader=new PaperReader({canvas:$('pdf-canvas'),status:$('pdf-status'),page:$('pdf-page'),previous:$('pdf-prev'),next:$('pdf-next'),zoom:$('pdf-zoom'),original:$('pdf-original'),retry:$('pdf-retry'),container:$('pdf-viewport')});
 let readingPaper=null,showcase=[];
 function readerTab(name){for(const value of ['pdf','sources']){const selected=name===value;const tab=$('tab-'+value);tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;$(value==='pdf'?'pdf-panel':'source-panel').hidden=!selected;}if(name==='pdf'&&readingPaper)void reader.open(readingPaper,state.accessToken);}
@@ -48,9 +54,10 @@ function busy(value){
   $('compact').disabled=value||state.mode!=='live';
   document.querySelectorAll('.paper-scope,.session-item,.example-card').forEach(n=>n.disabled=value);
   $('send-label').textContent=value?'处理中':state.mode==='demo'?'播放下一问':'发送问题';
+  renderSessionPanels();
   if(value)$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
 }
-function applyView(view){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.budget=view.budget;render();const last=state.turns.at(-1);if(last)inspector.updateRun(last);activity.reset();}
+function applyView(view){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.context=view.context??state.initialContext;state.budget=view.budget;render();const last=state.turns.at(-1);if(last)inspector.updateRun(last);activity.reset();}
 async function ensureSession(){
   if(state.active)return;
   const value=await api('/api/sessions',{});state.active={...value,label:'新对话'};
@@ -164,7 +171,7 @@ function renderMessages(){
   const box=$('messages');box.replaceChildren();$('welcome').hidden=state.turns.length>0;
   for(const [index,turn] of state.turns.entries()){
     const user=make('article','message user'),head=make('div','message-heading');head.append(make('span','avatar','↗'),make('span',null,'你'));user.append(head,make('div','message-text',turn.question));box.append(user);
-    const assistant=make('article','message assistant'),heading=make('div','message-heading');heading.append(make('span','avatar','✳'),make('span',null,'AsterCite'));assistant.append(heading);
+    const assistant=make('article','message assistant'),heading=make('div','message-heading');if(turn.turn_id)assistant.dataset.turnId=turn.turn_id;heading.append(make('span','avatar','✳'),make('span',null,'AsterCite'));assistant.append(heading);
     if(turn.coverage?.length){const chips=make('div','coverage-chips');for(const item of turn.coverage){const b=make('button','coverage-chip '+item.status,item.paper_id+' · '+(item.status==='addressed'?'已引用原文':'证据不足'));b.addEventListener('click',()=>openPdf(item.paper_id));chips.append(b);}assistant.append(chips);}
     const laidOut=turn.answer.replace(/(【\d{4}\.\d{4,5}[^】]*】)/gu,'\n\n$1\n\n').replace(/\s+(结论[:：])/gu,'\n\n$1');
     const text=make('div','message-text');for(const paragraph of laidOut.split(/\n\n+/).filter(p=>p.trim())){const isHeading=/^【\d{4}\.\d{4,5}[^】]*】$/u.test(paragraph.trim()),p=make(isHeading?'h3':'p',isHeading?'answer-section':'answer-paragraph');inlineText(p,paragraph,turn.sources);text.append(p);}assistant.append(text);
@@ -183,7 +190,7 @@ function renderMessages(){
 }
 function render(){renderPapers();renderSessions();renderScope();renderMessages();
   $('conversation-title').textContent=state.turns.length?'围绕论文，继续追问':'开始一次有依据的讨论';
-  $('compact').textContent=state.pending_compaction?'下一问将压缩':'压缩上下文';
+  $('compact').textContent=state.pending_compaction?'压缩已安排':'查看与压缩';renderSessionPanels();
   if(state.mode==='demo'){
     const next=state.sample.turns[Math.min(state.demoIndex+1,state.sample.turns.length-1)];$('question').value=state.demoIndex>=state.sample.turns.length-1?'示例已播放完毕。点击新建对话可重新开始。':next.label;
     $('send').disabled=state.demoIndex>=state.sample.turns.length-1;
@@ -212,7 +219,7 @@ async function sendQuestion(){
     const headers={'Content-Type':'application/json','X-AsterCite-Request':'1','X-AsterCite-Session':state.active.token};if(state.accessToken)headers.Authorization='Bearer '+state.accessToken;
     const response=await fetch('/api/sessions/'+state.active.id+'/question/stream',{method:'POST',headers,body:JSON.stringify({question})});
     if(response.status===401)$('access-dialog').showModal();
-    const view=await readQuestionStream(response,event=>{activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});});applyView(view);activity.finish();$('question').value='';
+    const view=await readQuestionStream(response,event=>{if(event.context){state.context=event.context;renderSessionPanels();}activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});});applyView(view);activity.finish();$('question').value='';
     state.active.label=state.turns[0]?.question.slice(0,32)||'新对话';persist();renderSessions();
     if(state.turns.at(-1)?.status!=='completed')notice('本轮未完成，请检查模型服务。已发生的请求计入会话用量。',true);
   }catch(e){activity.finish(false);document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{busy(false);}
@@ -221,17 +228,12 @@ $('question-form').addEventListener('submit',e=>{e.preventDefault();void sendQue
 $('question').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();void sendQuestion();}});
 $('paper-search').addEventListener('input',renderPapers);
 $('scope-all').addEventListener('click',()=>{if(state.mode==='demo'){state.scope=[];renderScope();renderPapers();}else void settings([],state.pending_compaction);});
-$('compact').addEventListener('click',()=>void settings(state.scope,!state.pending_compaction));
-$('new-chat').addEventListener('click',()=>{if(state.busy)return;state.active=null;state.turns=[];state.scope=[];state.memory=null;state.budget=null;state.pending_compaction=false;state.demoIndex=-1;clearNotice();render();activity.reset({replay:state.mode==='demo'});busy(false);if(state.mode==='live'){$('question').value='';$('question').focus();}});
+$('compact').addEventListener('click',()=>sessionPanel.openCompression());
+$('new-chat').addEventListener('click',()=>{if(state.busy)return;state.active=null;state.turns=[];state.scope=[];state.memory=null;state.context=state.initialContext;state.budget=null;state.pending_compaction=false;state.demoIndex=-1;clearNotice();render();activity.reset({replay:state.mode==='demo'});busy(false);if(state.mode==='live'){$('question').value='';$('question').focus();}});
 document.addEventListener('keydown',e=>{if(e.key==='n'&&!e.ctrlKey&&!e.metaKey&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&!document.querySelector('dialog[open]'))$('new-chat').click();if(e.key==='Escape'){document.querySelector('.evidence-panel').classList.remove('mobile-open');document.querySelector('.sidebar').classList.remove('mobile-open');}});
 $('setup-open').addEventListener('click',()=>$('setup-dialog').showModal());
 for(const [button,panel] of [['guide-demo','demo-guide'],['guide-live','live-guide']])$(button).addEventListener('click',()=>{for(const id of ['guide-demo','guide-live'])$(id).classList.toggle('selected',id===button);for(const id of ['demo-guide','live-guide'])$(id).hidden=id!==panel;});
-$('memory-open').addEventListener('click',()=>{
-  const content=$('memory-content');content.replaceChildren();
-  if(state.mode==='demo'){content.append(make('p',null,'这个示例展示了追问、论文切换和语言偏好纠正。完整问答模式可以在这里查看当前会话记忆。'));}
-  else{const rows=[['当前论文',state.memory?.paper_id||'尚未确定'],['对比论文',state.memory?.comparison.join('、')||'无'],['比较维度',state.memory?.dimensions.join('、')||'无'],['回答偏好',state.memory?.preferences.map(p=>p.key+'：'+p.value).join('；')||'无'],['上下文压缩',state.pending_compaction?'下一问执行':'按会话配置执行']];for(const [key,value] of rows){const row=make('div','memory-row');row.append(make('span',null,key),make('span',null,value));content.append(row);}}
-  $('memory-dialog').showModal();
-});
+$('memory-open').addEventListener('click',()=>sessionPanel.openMemory());
 $('access-form').addEventListener('submit',e=>{e.preventDefault();state.accessToken=$('access-token').value;$('access-token').value='';$('access-dialog').close();if(readingPaper)void reader.open(readingPaper,state.accessToken,true);notice('已设置访问口令，可以开始问答。');});
 $('export-chat').addEventListener('click',()=>{const blob=new Blob([JSON.stringify({application:'AsterCite',turns:state.turns},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),a=make('a');a.href=url;a.download='astercite-conversation.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 const closeEvidence=make('button','icon-text-button','关闭');closeEvidence.setAttribute('aria-label','关闭论文阅读');closeEvidence.addEventListener('click',()=>document.querySelector('.evidence-panel').classList.remove('mobile-open'));document.querySelector('.evidence-heading').append(closeEvidence);
@@ -242,7 +244,7 @@ async function init(){
   try{
     state.sample=await readJSON('/sample.json');
     let config;try{config=await readJSON('/api/config');if(!['demo','live'].includes(config.mode))throw new Error('模式无效');}catch{config=await readJSON('/config.json');}
-    state.mode=config.mode;state.papers=config.papers?.length?config.papers:state.sample.papers;
+    state.mode=config.mode;state.papers=config.papers?.length?config.papers:state.sample.papers;state.initialContext=config.context??null;state.context=state.initialContext;
     $('mode-badge').textContent=state.mode==='demo'?'示例回放':'完整问答';
     $('mode-note').textContent=state.mode==='demo'?'示例使用已保存的问答。部署后可自由提问。':'模型：'+config.model+' · 会话保存在当前问答服务';
     $('question').readOnly=state.mode==='demo';$('compact').disabled=state.mode!=='live';
