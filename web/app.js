@@ -9,12 +9,15 @@ const state={mode:'demo',papers:[],sample:null,turns:[],scope:[],pending_compact
 const STORAGE='astercite.web.sessions.v1';
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const inspector=new TraceInspector();
-function inspectActivity(item){
-  const owner=state.active,accessToken=state.accessToken;if(!owner||!item.turn_id){notice('这条历史记录没有保存完整请求详情。');return;}
-  inspector.open(item,async()=>{const headers={'X-AsterCite-Session':owner.token};if(accessToken)headers.Authorization='Bearer '+accessToken;
-    const response=await fetch(`/api/sessions/${owner.id}/traces/${item.turn_id}/${item.id}`,{headers});if(!response.ok)throw new Error('详情暂不可用');return (await response.json()).detail;});
+function inspectTurn(turn,live=false){
+  const owner=state.active,accessToken=state.accessToken;
+  inspector.openRun(turn,async item=>{
+    if(!owner||!item.turn_id)throw new Error('这条历史记录没有保存完整请求详情。');
+    const headers={'X-AsterCite-Session':owner.token};if(accessToken)headers.Authorization='Bearer '+accessToken;
+    const response=await fetch(`/api/sessions/${owner.id}/traces/${item.turn_id}/${item.id}`,{headers});if(!response.ok)throw new Error('详情暂不可用');return (await response.json()).detail;
+  },{live});
 }
-const activity=new ActivityPanel($('agent-activity'),inspectActivity);
+const activity=new ActivityPanel($('agent-activity'),()=>inspectTurn(activity.snapshot(),true));
 const reader=new PaperReader({canvas:$('pdf-canvas'),status:$('pdf-status'),page:$('pdf-page'),previous:$('pdf-prev'),next:$('pdf-next'),zoom:$('pdf-zoom'),original:$('pdf-original'),retry:$('pdf-retry'),container:$('pdf-viewport')});
 let readingPaper=null,showcase=[];
 function readerTab(name){for(const value of ['pdf','sources']){const selected=name===value;const tab=$('tab-'+value);tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;$(value==='pdf'?'pdf-panel':'source-panel').hidden=!selected;}if(name==='pdf'&&readingPaper)void reader.open(readingPaper,state.accessToken);}
@@ -47,7 +50,7 @@ function busy(value){
   $('send-label').textContent=value?'处理中':state.mode==='demo'?'播放下一问':'发送问题';
   if(value)$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
 }
-function applyView(view){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.budget=view.budget;render();activity.reset({items:state.turns.at(-1)?.activity??[],outcome:state.turns.at(-1)?.status});}
+function applyView(view){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.budget=view.budget;render();const last=state.turns.at(-1);if(last)inspector.updateRun(last);activity.reset();}
 async function ensureSession(){
   if(state.active)return;
   const value=await api('/api/sessions',{});state.active={...value,label:'新对话'};
@@ -168,7 +171,7 @@ function renderMessages(){
     if(turn.coverage?.length){const coverage=make('details','paper-coverage');coverage.open=true;coverage.append(make('summary',null,`本轮逐篇分析 · ${turn.coverage.length} 篇论文`));
       for(const item of turn.coverage){const row=make('div','coverage-row');row.append(make('strong',null,item.paper_id+' · '+(state.papers.find(p=>p.paper_id===item.paper_id)?.title??'')),make('span','coverage-state',item.status==='addressed'?'已引用原文':'证据不足'),make('p',null,item.summary));coverage.append(row);}assistant.append(coverage);}
     const foot=make('div','answer-footer');const sources=make('button',null,turn.sources.length+' 处原文引用');sources.addEventListener('click',()=>{state.sourceTurn=index;showSources(turn.sources);readerTab('sources');openEvidence();});foot.append(sources);
-    if(turn.activity?.length){const process=make('button',null,'查看执行过程');process.addEventListener('click',()=>{activity.reset({items:turn.activity,outcome:turn.status});$('agent-activity').scrollIntoView({block:'nearest'});});foot.append(process);}
+    const process=make('button','execution-open','查看执行过程');process.addEventListener('click',()=>inspectTurn(turn));foot.append(process);
     if(state.mode==='live')foot.append(make('span',null,'· '+Math.round(turn.elapsed_ms/1000)+' 秒'),make('span',null,'· '+(turn.tokens===null?'token 未报告':turn.tokens+' token')));
     else foot.append(make('span',null,'· 示例回放'));
     if(turn.status!=='completed')foot.append(make('span','answer-status','本轮未完成'));
@@ -202,14 +205,14 @@ async function sendQuestion(){
   const question=$('question').value.trim();if(!question)return;
   if(Array.from(question).length>12000){notice('问题最多 12000 字。',true);return;}
   clearNotice();busy(true);
-  activity.reset({running:true});
+  activity.reset({running:true,question});
   try{
     await ensureSession();
     const pending=make('article','message user pending-question');pending.append(make('div','message-heading','你'),make('div','message-text',question));$('messages').append(pending);$('welcome').hidden=true;$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
     const headers={'Content-Type':'application/json','X-AsterCite-Request':'1','X-AsterCite-Session':state.active.token};if(state.accessToken)headers.Authorization='Bearer '+state.accessToken;
     const response=await fetch('/api/sessions/'+state.active.id+'/question/stream',{method:'POST',headers,body:JSON.stringify({question})});
     if(response.status===401)$('access-dialog').showModal();
-    const view=await readQuestionStream(response,event=>{activity.update(event);void inspector.refresh(event);});applyView(view);activity.finish(state.turns.at(-1)?.status==='completed');$('question').value='';
+    const view=await readQuestionStream(response,event=>{activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});});applyView(view);activity.finish();$('question').value='';
     state.active.label=state.turns[0]?.question.slice(0,32)||'新对话';persist();renderSessions();
     if(state.turns.at(-1)?.status!=='completed')notice('本轮未完成，请检查模型服务。已发生的请求计入会话用量。',true);
   }catch(e){activity.finish(false);document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{busy(false);}

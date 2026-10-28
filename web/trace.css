@@ -1,2 +1,53 @@
 .trace-page{margin:0;background:#f5f7f1;color:#283e2c;font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;font-size:14px;line-height:1.75}.trace-root{max-width:1050px;margin:auto;padding:26px 30px 40px;color:#283e2c;font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;font-size:14px;line-height:1.75}.trace-root *{box-sizing:border-box}.trace-head h1{font-size:23px;font-weight:600;margin:0 0 7px}.trace-head p,.trace-description{color:#53674c;margin:5px 0 18px}.trace-tabs{display:flex;gap:18px;border-bottom:1px solid #d0dcc8;margin:18px 0 24px}.trace-tabs button{border:0;border-bottom:2px solid transparent;background:none;padding:10px 2px;font:inherit;color:#506448;cursor:pointer}.trace-tabs button.selected{border-color:#386344;color:#234d33;font-weight:600}.trace-message{border:1px solid #d6e0cd;border-radius:8px;background:#fff;margin:13px 0;overflow:hidden}.trace-message summary{padding:12px 16px;cursor:pointer;font-weight:600;background:#f0f5e9}.trace-message .trace-code{border:0;border-radius:0;margin:0;background:#fff}.trace-code{margin:12px 0 22px;background:#fff;border:1px solid #d6e0cd;border-radius:8px;padding:18px;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;font:13px/1.85 Consolas,"Microsoft YaHei UI",monospace;max-height:65vh;color:#293c2c}.trace-section h2{font-size:16px;margin:22px 0 10px}.trace-meta{font-size:12px;color:#53674c;padding:0 16px;overflow-wrap:anywhere}.trace-dialog{width:min(1100px,94vw);max-width:none;max-height:90dvh;padding:0;border:1px solid #b8c8ab;border-radius:12px;background:#f5f7f1;box-shadow:0 12px 50px #20351b25}.trace-dialog::backdrop{background:#24391f45}.trace-close{display:block;margin:15px 20px 0 auto;padding:9px 15px;border:1px solid #b8c8ab;border-radius:6px;background:white;color:#2c5135;cursor:pointer;font:13px "Microsoft YaHei UI",sans-serif}.trace-root [hidden]{display:none!important}.trace-root button:focus-visible,.trace-root summary:focus-visible{outline:2px solid #3d6c47;outline-offset:3px}.trace-root::selection{background:#d4e3c8}@media(max-width:620px){.trace-root{padding:22px 16px}.trace-head h1{font-size:19px}.trace-tabs{gap:13px}.trace-tabs button{font-size:13px}.trace-code{padding:13px;font-size:12px}.trace-dialog{width:96vw}}
-.trace-popout{position:absolute;left:20px;top:15px;padding:9px 15px;border:1px solid #b8c8ab;border-radius:6px;background:white;color:#2c5135;cursor:pointer;font:13px "Microsoft YaHei UI",sans-serif}
+.trace-window-toolbar{display:flex;align-items:center;gap:10px;padding:12px 20px;min-height:58px;flex-shrink:0;border-bottom:1px solid #d6e0cd;background:#f5f7f1;position:sticky;top:0;z-index:3}
+.trace-close,.trace-popout,.trace-retry{position:static;margin:0;padding:8px 13px;border:1px solid #b8c8ab;border-radius:6px;background:white;color:#2c5135;cursor:pointer;font:13px "Microsoft YaHei UI",sans-serif}
+.trace-close{margin-left:auto}.trace-retry{color:#76542b}.trace-window-toolbar button:hover{background:#eaf1e2}.trace-window-toolbar button:focus-visible{outline:2px solid #3d6c47;outline-offset:3px}
+.trace-code-block{min-width:0;margin:12px 0 22px}.trace-code-block .trace-code{margin:0;tab-size:2}
+.trace-code-toolbar{display:flex;align-items:center;justify-content:space-between;border:1px solid #d6e0cd;border-bottom:0;border-radius:8px 8px 0 0;background:#edf2e7;padding:6px 12px;font-size:11px;color:#435c39}
+.trace-code-toolbar+.trace-code{border-top-left-radius:0;border-top-right-radius:0}
+.trace-code-toolbar button{border:0;background:transparent;color:#2f5e3a;font:12px "Microsoft YaHei UI",sans-serif;cursor:pointer;padding:5px;text-decoration:underline;text-underline-offset:3px}
+.trace-message .trace-code-toolbar{border:0;border-radius:0}.trace-message .trace-code-block{margin:0}
+.replay-dialog[open]{display:flex;flex-direction:column;width:min(1540px,96vw);height:94dvh;max-height:1000px;overflow:hidden}
+.execution-player{display:flex;flex-direction:column;max-width:none;min-height:0;min-width:0;width:100%;padding:18px 26px 20px;flex:1;overflow:hidden;line-height:1.6}
+.replay-heading{flex-shrink:0}.replay-heading h1{font-size:23px;font-weight:650;line-height:1.3;margin:0 0 6px;color:#1e4332}
+.replay-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px}.replay-graph-toggle{border:0;border-radius:4px;background:transparent;color:#3d6538;font:12px "Microsoft YaHei UI",sans-serif;padding:6px;cursor:pointer;white-space:nowrap;text-decoration:underline;text-underline-offset:3px}
+.replay-summary{font-size:12px;color:#48603f;margin:0 0 9px;font-variant-numeric:tabular-nums}
+.replay-question{font-size:14px;color:#304b33;line-height:1.7;margin:0;max-height:52px;overflow:auto;overflow-wrap:anywhere}
+.replay-graph{flex-shrink:0;width:100%;overflow-x:auto;overscroll-behavior-x:contain;margin:6px 0 0;scrollbar-width:thin;scrollbar-color:#a5b89a #edf2e7}
+.replay-graph svg{display:block;width:100%;min-width:1050px;height:232px}
+.flow-loop-boundary{fill:#edf2e6;stroke:#c5d3ba;stroke-width:1;stroke-dasharray:5 5}
+.flow-loop-title{fill:#4a6540;font-size:14px;font-weight:550}
+.flow-edge path{stroke:#c5d1bc;stroke-width:1.3;stroke-dasharray:4 5}.flow-edge text{font-size:14px;fill:#6b7e5f;paint-order:stroke;stroke:#f5f7f1;stroke-width:5px;stroke-linejoin:round}
+.flow-edge.recorded path{stroke:#7a936b;stroke-dasharray:none;stroke-width:1.8}.flow-edge.recorded text{fill:#3e5c33}
+.flow-edge.flow-current path{stroke:#245c40;stroke-width:2.8;stroke-dasharray:11 6}
+.is-animating .flow-edge.flow-current path{animation:replay-flow 1.1s linear infinite}
+.flow-node{cursor:pointer;outline:none}.flow-node rect{fill:#fbfdf8;stroke:#a7bd98;stroke-width:1.3;transition:fill .15s,stroke .15s}
+.flow-node-title{font-size:17px;fill:#2c4e31;font-weight:600}.flow-node-subtitle{font-size:14px;fill:#49603f}
+.flow-node.visited rect{fill:#e0ebd6;stroke:#789867}.flow-node.active rect{fill:#214f3c;stroke:#214f3c;stroke-width:2}.flow-node.active text{fill:#fff}.flow-node.active .flow-node-subtitle{fill:#e2eed9}
+.flow-node.unrecorded{cursor:default}.flow-node.unrecorded rect{fill:#f5f7f1;stroke:#ccd6c6;stroke-dasharray:4 4}.flow-node.unrecorded text{fill:#6d7d64}
+.flow-node:focus-visible rect{stroke:#124f83;stroke-width:3}.flow-node:not(.unrecorded):hover rect{stroke:#214f3c;stroke-width:2.4}
+.replay-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex-shrink:0;padding:3px 0 10px}
+.replay-controls button,.replay-controls select{border:1px solid #b9cbae;border-radius:6px;background:#fff;color:#2f5134;font:12px "Microsoft YaHei UI",sans-serif;min-height:34px;padding:6px 11px;cursor:pointer}
+.replay-controls button:hover:enabled{background:#e7efdf}.replay-controls button:disabled{opacity:.45;cursor:default}.replay-controls .replay-play{background:#214f3c;border-color:#214f3c;color:#fff;min-width:90px}.replay-controls .replay-play:hover:enabled{background:#326447}
+.replay-speed{font-size:12px;color:#435d39;display:flex;align-items:center;gap:5px;margin-left:7px}.replay-controls select{padding:5px}
+.replay-clock{margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;color:#3e5935}
+.replay-timeline{flex-shrink:0;font-size:12px;color:#3e5935}.replay-timeline label{display:block}
+.replay-slider{--replay-progress:0%;display:block;appearance:none;width:100%;height:6px;margin:12px 0 8px;border-radius:4px;background:linear-gradient(to right,#3f7450 0 var(--replay-progress),#d4dfca var(--replay-progress) 100%);cursor:pointer;accent-color:#2e6542;touch-action:pan-y}
+.replay-slider::-webkit-slider-thumb{appearance:none;width:17px;height:17px;border-radius:50%;border:2px solid #fff;background:#245c40;box-shadow:0 1px 4px #24421f38}.replay-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;border:2px solid #fff;background:#245c40}
+.replay-slider:focus-visible{outline:2px solid #3b704a;outline-offset:7px}.replay-captions{display:flex;justify-content:space-between;font-size:11px;color:#526a47;font-variant-numeric:tabular-nums}
+.replay-note{margin:9px 0 12px;font-size:12px;color:#4b6441;line-height:1.6;flex-shrink:0}
+.replay-body{display:grid;grid-template-columns:238px minmax(0,1fr);border-top:1px solid #cbd9c0;min-height:0;flex:1;overflow:hidden}
+.replay-events{margin:0;padding:12px 14px 0 0;list-style:none;overflow:auto;scrollbar-width:thin;scrollbar-color:#9fb68e transparent;border-right:1px solid #d5e0cb}
+.replay-events li{margin:0 0 3px}.replay-events button{display:flex;flex-direction:column;gap:3px;border:0;background:transparent;color:#3d5635;border-radius:6px;width:100%;text-align:left;font:12px/1.55 "Microsoft YaHei UI",sans-serif;padding:9px 10px;cursor:pointer;overflow-wrap:anywhere}
+.replay-events button:hover{background:#eaf1e2}.replay-events button.selected{background:#dde9d2;color:#214e30}.replay-event-time{font-size:11px;font-variant-numeric:tabular-nums;color:#536c47}
+.replay-detail{min-width:0;overflow:auto;padding:18px 5px 0 22px;scrollbar-width:thin;scrollbar-color:#9fb68e transparent}
+.replay-detail .trace-head h1{font-size:18px;line-height:1.5}.replay-detail .trace-head p{font-size:12px;line-height:1.65;margin-bottom:10px}
+.replay-detail .trace-tabs{gap:18px;margin:8px 0 16px;position:sticky;top:-18px;z-index:1;background:#f5f7f1}.replay-detail .trace-tabs button{font-size:13px;padding:9px 2px}
+.replay-detail .trace-code{font-size:12px;line-height:1.85;padding:14px;max-height:none}.replay-detail .trace-message{margin-top:10px}.replay-detail .trace-message summary{font-size:12px;padding:10px 12px}
+.replay-event-content{font-size:14px;line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;max-width:80ch}
+.replay-page{height:100dvh;overflow:hidden}.replay-page>.execution-player{height:100%;max-width:1600px;margin:auto}
+.execution-player ::selection{background:#d3e4c7;color:#1b422b}.execution-player button:focus-visible,.execution-player select:focus-visible{outline:2px solid #3b704a;outline-offset:2px}
+@keyframes replay-flow{to{stroke-dashoffset:-34}}
+@media(max-width:900px){.execution-player{padding:16px}.replay-body{grid-template-columns:195px minmax(0,1fr)}.replay-graph svg{height:216px}.replay-heading h1{font-size:21px}.replay-detail{padding-left:16px}}
+@media(max-height:720px) and (min-width:621px){.execution-player{overflow:auto;flex:none;height:calc(94dvh - 58px)}.replay-body{min-height:300px;flex:none}.replay-detail,.replay-events{max-height:400px}}
+@media(prefers-reduced-motion:reduce){.is-animating .flow-edge.flow-current path{animation:none}.flow-node rect{transition:none}}

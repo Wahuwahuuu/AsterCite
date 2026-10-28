@@ -21,7 +21,6 @@
     </aside>
     <section class="conversation" aria-label="问答工作区">
       <div class="conversation-top"><div><span class="live-dot" aria-hidden="true"></span><span id="conversation-title">开始一次有依据的讨论</span></div><div class="conversation-actions"><button id="reader-open" class="icon-text-button">论文 / 引用</button><button id="suggestions-open" class="icon-text-button">推荐问题</button><button id="memory-open" class="icon-text-button" title="查看会话记忆">记忆</button><button id="export-chat" class="icon-text-button" disabled>导出对话</button></div></div>
-      <section id="agent-activity" class="agent-activity" aria-label="Agent 执行过程"></section>
       <div id="chat-scroll" class="chat-scroll">
         <section id="welcome" class="welcome">
           <h1>让每个回答，<br>都有<span>出处。</span></h1><p class="welcome-description">选一篇论文，提出问题。<br>跟随 Agent 的执行过程，回到原始 PDF 核对答案。</p>
@@ -29,6 +28,7 @@
           <div class="welcome-footnote"><span aria-hidden="true">↳</span> 回答中的引用可点开查看右侧原文</div>
         </section>
         <div id="messages" class="messages" aria-live="polite"></div>
+        <section id="agent-activity" class="agent-activity" aria-label="正在执行的问答" hidden></section>
         <div id="busy-indicator" class="busy-indicator" hidden><span class="spinner" aria-hidden="true"></span><span>正在查找论文证据并整理回答…</span></div>
       </div>
       <div class="composer-area"><div class="scope-row"><span>论文范围</span><button id="scope-all" class="scope-chip selected">全部论文</button><span id="selected-scope"></span><span id="budget-hint" class="budget-hint"></span></div>
