@@ -12,6 +12,9 @@
 | [Node.js](https://nodejs.org/) | Windows 版内置 JavaScript 运行时 | MIT 及附带第三方许可 |
 | [CPython](https://www.python.org/)、[python-build-standalone](https://github.com/astral-sh/python-build-standalone) | Windows 版内置 Python 运行时 | PSF 及附带第三方许可 |
 | [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) | Windows 运行依赖 | Microsoft 软件许可 |
+| [Marked](https://github.com/markedjs/marked) | Markdown 解析 | MIT |
+| [DOMPurify](https://github.com/cure53/DOMPurify) | 网页内容清理 | Apache-2.0 或 MPL-2.0 |
+| [KaTeX](https://github.com/KaTeX/KaTeX) | 数学公式渲染与配套字体 | MIT |
 
 依赖版本见 `package-lock.json`、`uv.lock` 和 `desktop/requirements-win-x64.lock`；论文来源见 `data/full-v1/manifests/corpus.json`。内置论文文本来自 QASPER，保留论文标题与公开来源链接；问答示例中的原文片段来自对应的公开论文。安装版中各运行时与依赖包附带的许可证保留在对应目录。
 
@@ -21,3 +24,7 @@
 ## PDF 阅读器
 
 网页使用 Mozilla PDF.js 6.4.299（Apache-2.0），浏览器发行文件来自锁定的 `pdfjs-dist` 包。许可证保存在 `web/vendor/pdfjs-LICENSE`。论文 PDF 从各篇论文的官方 arXiv 页面获取，权利归原作者；本项目的源码许可证不覆盖论文。
+
+## Markdown 与数学公式
+
+网页内置 Marked 18.1.2、DOMPurify 3.4.17 和 KaTeX 0.19.1，包含 KaTeX 配套字体。发行文件来自对应的锁定 npm 包，版本与资源清单保存在 `web/vendor/render-assets.json`。相关许可证保存在 `web/vendor/marked-LICENSE`、`web/vendor/purify-LICENSE`、`web/vendor/purify-LICENSE-MPL` 和 `web/vendor/katex-LICENSE`。
