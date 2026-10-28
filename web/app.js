@@ -28,7 +28,7 @@ const sessionPanel=new SessionPanel({onSchedule:compact=>settings(state.scope,co
   const turn=[...document.querySelectorAll('[data-turn-id]')].find(item=>item.dataset.turnId===id);if(turn){turn.scrollIntoView({behavior:'smooth',block:'start'});turn.classList.add('memory-highlight');setTimeout(()=>turn.classList.remove('memory-highlight'),2000);}else notice('这条摘记来自更早的对话，当前记录中未找到对应回答。');
 }});
 function renderSessionPanels(){sessionPanel.update({mode:state.mode,papers:state.papers,turns:state.turns,memory:state.memory,context:state.context,pending:state.pending_compaction,busy:state.busy});}
-const reader=new PaperReader({canvas:$('pdf-canvas'),status:$('pdf-status'),page:$('pdf-page'),previous:$('pdf-prev'),next:$('pdf-next'),zoom:$('pdf-zoom'),original:$('pdf-original'),retry:$('pdf-retry'),container:$('pdf-viewport'),stage:$('pdf-page-stage'),highlightLayer:$('pdf-highlight-layer'),highlightBar:$('pdf-highlight-bar'),highlightStatus:$('pdf-highlight-status'),highlightClear:$('pdf-highlight-clear')});
+const reader=new PaperReader({pages:$('pdf-pages'),status:$('pdf-status'),page:$('pdf-page'),previous:$('pdf-prev'),next:$('pdf-next'),zoom:$('pdf-zoom'),original:$('pdf-original'),retry:$('pdf-retry'),container:$('pdf-viewport'),highlightBar:$('pdf-highlight-bar'),highlightStatus:$('pdf-highlight-status'),highlightClear:$('pdf-highlight-clear')});
 let readingPaper=null,showcase=[];
 const readerFollow=new ReaderFollow({open:id=>openPdf(id,{automatic:true}),current:()=>readingPaper?.paper_id??null});
 function renderReaderFollow(){$('reader-follow-state').textContent=!readerFollow.enabled?'已关闭自动切换':readerFollow.pinned?'本轮保持你的选择':'回答时自动切换论文';}

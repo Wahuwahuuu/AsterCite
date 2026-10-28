@@ -42,8 +42,8 @@
         <label class="sr-only" for="pdf-paper">阅读的论文</label><select id="pdf-paper" class="pdf-paper"></select><div class="reader-follow"><label><input id="reader-follow" type="checkbox" checked> 跟随讨论</label><span id="reader-follow-state" role="status">回答时自动切换论文</span></div><h2 id="pdf-title" class="pdf-title">选择论文，阅读原文</h2>
         <div class="pdf-toolbar"><button id="pdf-prev" aria-label="PDF 上一页" disabled>上一页</button><span id="pdf-page" aria-live="polite">—</span><button id="pdf-next" aria-label="PDF 下一页" disabled>下一页</button><label class="sr-only" for="pdf-zoom">PDF 缩放</label><select id="pdf-zoom" aria-label="PDF 缩放"><option value="1">适应宽度</option><option value="1.25">125%</option><option value="1.5">150%</option></select></div>
         <div id="pdf-highlight-bar" class="pdf-citation-bar" hidden><span id="pdf-highlight-status" role="status"></span><button id="pdf-highlight-clear">清除高亮</button></div>
-        <div id="pdf-viewport" class="pdf-viewport"><p id="pdf-status" role="status">选择左侧论文，即可在这里阅读原始 PDF。</p><button id="pdf-retry" class="reader-retry" hidden>重新加载 PDF</button><div id="pdf-page-stage" class="pdf-page-stage"><canvas id="pdf-canvas" role="img" aria-label="论文原始 PDF" hidden></canvas><div id="pdf-highlight-layer" class="pdf-highlight-layer" aria-hidden="true"></div></div></div>
-        <div class="pdf-footer"><span>arXiv 原始 PDF · v1</span><a id="pdf-original" target="_blank" rel="noopener noreferrer" hidden>打开官方原文</a></div>
+        <div id="pdf-viewport" class="pdf-viewport"><p id="pdf-status" role="status">选择左侧论文，即可上下滑动阅读整篇 PDF。</p><button id="pdf-retry" class="reader-retry" hidden>重新加载 PDF</button><div id="pdf-pages" class="pdf-pages" role="document" aria-label="论文全文连续预览" hidden></div></div>
+        <div class="pdf-footer"><span>连续阅读 · arXiv PDF · v1</span><a id="pdf-original" target="_blank" rel="noopener noreferrer" hidden>打开官方原文</a></div>
       </section>
       <section id="source-panel" class="source-panel" role="tabpanel" aria-labelledby="tab-sources" hidden><p class="evidence-subheading">点击回答中的引用，查看出处</p><div id="sources" class="sources"></div><div class="evidence-footer">原文节选 · 保留论文出处</div></section>
     </aside>

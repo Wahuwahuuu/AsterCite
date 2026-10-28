@@ -4,4 +4,5 @@ export class PaperReader {
   show(page:number):Promise<void>;
   highlight(source:{paper_id:string;title:string;chunk_id:string;section:string;text:string},accessToken?:string):Promise<void>;
   clearHighlight():void;
+  dispose():void;
 }
