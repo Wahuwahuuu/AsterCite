@@ -171,7 +171,7 @@ function renderMessages(){
       for(const item of turn.coverage){const row=make('div','coverage-row');row.append(make('strong',null,item.paper_id+' · '+(state.papers.find(p=>p.paper_id===item.paper_id)?.title??'')),make('span','coverage-state',item.status==='addressed'?'已引用原文':'证据不足'),make('p',null,item.summary));coverage.append(row);}assistant.append(coverage);}
     const foot=make('div','answer-footer');const sources=make('button',null,turn.sources.length+' 处原文引用');sources.addEventListener('click',()=>{state.sourceTurn=index;showSources(turn.sources);readerTab('sources');openEvidence();});foot.append(sources);
     const process=make('button','execution-open','查看执行过程');process.addEventListener('click',()=>inspectTurn(turn));foot.append(process);
-    if(state.mode==='live')foot.append(make('span',null,'· '+Math.round(turn.elapsed_ms/1000)+' 秒'),make('span',null,'· '+(turn.tokens===null?'token 未报告':turn.tokens+' token')));
+    if(state.mode==='live')foot.append(make('span',null,'· '+Math.round(turn.elapsed_ms/1000)+' 秒'),make('span',null,'· '+(turn.tokens===null?'本轮用量未报告':'本轮累计用量 '+turn.tokens+' token')));
     else foot.append(make('span',null,'· 示例回放'));
     if(turn.status!=='completed')foot.append(make('span','answer-status','本轮未完成'));
     assistant.append(foot);box.append(assistant);
