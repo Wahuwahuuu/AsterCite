@@ -17,7 +17,7 @@ import type {AnswerUpdate} from './answer-stream.ts';
 
 export interface WebSource { chunk_id:string; paper_id:string; title:string; section:string; text:string }
 export interface WebExecutionDetail extends ExecutionEvent {turn_id:string;cycle:number;elapsed_ms:number;turn_elapsed_ms:number;started_at:string}
-export interface WebActivity { id:string; kind:"model"|"tool"|"memory"|"compaction"; status:"running"|"completed"|"error"; label:string; detail:string; elapsed_ms:number; tool?:"search_papers"|"retrieve_chunks";turn_id?:string;cycle?:number;parent_id?:string;origin?:"model"|"host_plan";has_details?:boolean;context?:ContextView }
+export interface WebActivity { id:string; kind:"model"|"tool"|"memory"|"compaction"; status:"running"|"completed"|"error"; label:string; detail:string; elapsed_ms:number; tool?:"search_papers"|"retrieve_chunks";paper_ids?:string[];turn_id?:string;cycle?:number;parent_id?:string;origin?:"model"|"host_plan";has_details?:boolean;context?:ContextView }
 export type ProgressListener=(activity:WebActivity)=>void;
 export type AnswerListener=(update:AnswerUpdate&{sources:WebSource[];context?:ContextView})=>void;
 export interface WebTurn { question:string; answer:string; status:string; sources:WebSource[]; elapsed_ms:number; requests:number; tokens:number|null; stages:Array<{stage:string;status:string}>; activity?:WebActivity[];turn_id?:string;coverage?:PaperCoverage[] }
@@ -86,12 +86,15 @@ export class PaperWebSession implements WebSessionPort {
     const readingAbstract=(value.input as {section?:string}|undefined)?.section==='abstract'||value.output?.text.includes('"backend":"corpus_abstract_v1"');
     const label=event.kind==='compaction'?'压缩会话上下文':event.kind==="tool"?event.tool==="search_papers"?"查找论文":readingAbstract?"读取摘要原文":"检索与重排原文":preparing?"理解问题与改写查询":event.stage==="citation_repair"?"修正回答与引用":event.phase==="compaction"?"压缩会话上下文":["generate","closing"].includes(event.stage)?"依据原文整理回答":"分析证据与选择行动";
     let detail=event.kind==="model"?event.status==="running"?"查看本轮模型上下文与请求内容":"查看模型可见输出与工具选择":"";
+    let paperIds:string[]|undefined;
     if(event.kind==="tool"){
       const input=value.input as {query?:string;paper_ids?:string[]}|undefined;
-      let count:string="";try{const result=JSON.parse(value.output?.text??"{}");count=Array.isArray(result.chunks)?`返回 ${result.chunks.length} 段原文`:Array.isArray(result.papers)?`返回 ${result.papers.length} 篇论文`:"";}catch{}
+      let count:string="";try{const result=JSON.parse(value.output?.text??"{}");count=Array.isArray(result.chunks)?`返回 ${result.chunks.length} 段原文`:Array.isArray(result.papers)?`返回 ${result.papers.length} 篇论文`:"";
+        if(event.tool==='retrieve_chunks'&&event.status==='completed'&&Array.isArray(result.chunks))paperIds=[...new Set<string>(result.chunks.flatMap((chunk:{chunk_id?:string})=>{const source=this.sources.get(chunk.chunk_id??'');return source?[source.paper_id]:[];}))];
+      }catch{}
       detail=`${input?.query??""}${count?" · "+count:input?.paper_ids?" · "+input.paper_ids.join("、"):""}`;
     }
-    this.emit({id:event.id,kind:event.kind,status:event.status,label,detail,tool:event.tool,turn_id:this.activeTurn,cycle,parent_id:event.parent_id,origin:event.origin,has_details:true});
+    this.emit({id:event.id,kind:event.kind,status:event.status,label,detail,tool:event.tool,paper_ids:paperIds,turn_id:this.activeTurn,cycle,parent_id:event.parent_id,origin:event.origin,has_details:true});
   }
   async detail(turnId:string,id:string):Promise<WebExecutionDetail|null>{return turnId===this.activeTurn?structuredClone(this.traceDetails.get(id)??null):readSavedTrace(this.directory,turnId,id);}
   private emit(value:Omit<WebActivity,"elapsed_ms">){

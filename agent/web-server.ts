@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {readFileSync} from 'node:fs';
-import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile, mkdir, readdir, lstat, realpath, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { PROJECT_ROOT, loadAssets, createWorker, fileHash } from "./assets.ts";
@@ -41,6 +41,8 @@ const STATIC_FILES:Record<string,{file:string;type:string}>={
   ,"/session-panel.js":{file:"session-panel.js",type:"text/javascript; charset=utf-8"}
   ,"/markdown.js":{file:"markdown.js",type:"text/javascript; charset=utf-8"}
   ,"/answer-preview.js":{file:"answer-preview.js",type:"text/javascript; charset=utf-8"}
+  ,"/reader-follow.js":{file:"reader-follow.js",type:"text/javascript; charset=utf-8"}
+  ,"/pdf-citation.js":{file:"pdf-citation.js",type:"text/javascript; charset=utf-8"}
 };
 const rendererAssets=JSON.parse(readFileSync(new URL('../web/vendor/render-assets.json',import.meta.url),'utf8')) as {files:string[]};
 for(const name of rendererAssets.files){
@@ -59,6 +61,7 @@ function failure(code:string):{status:number;message:string}{
     TOO_LARGE:{status:413,message:"输入内容过长。"},DEMO_ONLY:{status:409,message:"这里提供示例回放，完整问答请自行部署。"},
     INVALID_SESSION:{status:409,message:"会话文件无法读取，请新建会话。"},INVALID_BUDGET:{status:409,message:"会话配置已经变化，请新建会话。"},
     INVALID_SNAPSHOT:{status:409,message:"会话配置已经变化，请新建会话。"}
+    ,INVALID_PATH:{status:403,message:"这个会话的保存位置无法访问。"}
     ,PDF_UNAVAILABLE:{status:502,message:"PDF 暂时无法加载，请重试或打开官方原文。"}
     ,TRANSLATION_FAILED:{status:502,message:"译文暂时未能生成，可重试或查看英文原文。"}
     ,TRANSLATION_LIMIT:{status:429,message:"本轮译文请求已达到上限，可继续阅读英文原文。"}
@@ -81,6 +84,14 @@ async function body(req:IncomingMessage):Promise<Record<string,unknown>>{
 }
 function only(v:Record<string,unknown>,keys:string[]){if(Object.keys(v).some(k=>!keys.includes(k)))throw new RuntimeFailure("INVALID_INPUT","Unexpected fields");}
 
+async function deletionTarget(sessionPath:string,dir:string,id:string):Promise<string>{
+  const base=await realpath(sessionPath),info=await lstat(dir),target=await realpath(dir);
+  // Delete only the actual UUID directory immediately below the session store.
+  // A junction to another session or to shared project files must never be followed.
+  if(!info.isDirectory()||info.isSymbolicLink()||target!==resolve(base,id))throw new RuntimeFailure("INVALID_PATH","Session directory is linked or misplaced");
+  return target;
+}
+
 export async function createWebServer(options:WebServerOptions){
   const sessionPath=await containedPath(options.root,".local/web/sessions");
   if(options.mode==="live")await mkdir(sessionPath,{recursive:true});
@@ -89,6 +100,7 @@ export async function createWebServer(options:WebServerOptions){
   const pdfs=new PaperPdfCache(options.root,new Set((papers??[]).map(p=>p.paper_id)),options.pdfFetch);
   let processing=false,creating=false;
   const liveSessions=new Map<string,WebSessionPort>();
+  const deleting=new Set<string>(),translations=new Map<string,number>();
   const server=createServer(async(req,res)=>{
     headers(res);
     try{
@@ -135,6 +147,17 @@ export async function createWebServer(options:WebServerOptions){
       let owner:{token_digest:string};try{owner=JSON.parse(await readFile(await containedPath(dir,"owner.json"),"utf8"));}catch{throw new RuntimeFailure("NOT_FOUND","Missing session");}
       const token=String(req.headers["x-astercite-session"]??"");
       if(!token||!safeEqual(owner.token_digest,sha(token)))throw new RuntimeFailure("FORBIDDEN","Session owner differs");
+      if(deleting.has(match[1]))throw new RuntimeFailure("SESSION_LOCKED","Session is being deleted");
+      if(method==="DELETE"&&!match[2]){
+        if(processing)throw new RuntimeFailure("SESSION_LOCKED","A session is running");
+        if(translations.has(match[1]))throw new RuntimeFailure("TRANSLATION_BUSY","Session translation is running");
+        deleting.add(match[1]);
+        try{
+          const target=await deletionTarget(sessionPath,dir,match[1]);
+          await rm(target,{recursive:true,maxRetries:2,retryDelay:100});
+          json(res,200,{deleted:true,id:match[1]});return;
+        }finally{deleting.delete(match[1]);}
+      }
       if(method==="GET"&&match[2]?.startsWith("traces/")){
         const [,turnId,eventId]=match[2].split("/");
         const detail=await liveSessions.get(match[1])?.detail?.(turnId,eventId)??await readSavedTrace(dir,turnId,eventId);
@@ -142,11 +165,14 @@ export async function createWebServer(options:WebServerOptions){
       }
       if(method==="POST"&&match[2]==="translate"){
         if(!options.translate)throw new RuntimeFailure("TRANSLATION_FAILED","No translation service");
+        translations.set(match[1],(translations.get(match[1])??0)+1);
+        try{
         const input=await body(req);only(input,["turn_id","chunk_ids"]);
         if(typeof input.turn_id!=="string"||!/^[a-f0-9-]{36}$/u.test(input.turn_id)||!Array.isArray(input.chunk_ids)||input.chunk_ids.length<1||input.chunk_ids.length>2||new Set(input.chunk_ids).size!==input.chunk_ids.length||input.chunk_ids.some(id=>typeof id!=="string"||id.length>300))throw new RuntimeFailure("INVALID_INPUT","Invalid translation source");
         const saved=JSON.parse(await readFile(await containedPath(dir,`turns/${input.turn_id}.json`),"utf8"));
         const sources=(input.chunk_ids as string[]).map(id=>{const source=saved.web_turn?.sources?.find((s:{chunk_id:string})=>s.chunk_id===id);if(!source||typeof source.text!=="string"||source.text.length>12000)throw new RuntimeFailure("INVALID_INPUT","Source is not cited by this turn");return {chunk_id:id,text:source.text};});
         json(res,200,await options.translate(sources,dir,input.turn_id));return;
+        }finally{const count=(translations.get(match[1])??1)-1;if(count)translations.set(match[1],count);else translations.delete(match[1]);}
       }
       if(processing)throw new RuntimeFailure("SESSION_LOCKED","A question is running");
       let action:"view"|"ask"|"settings";
@@ -162,7 +188,7 @@ export async function createWebServer(options:WebServerOptions){
         if(action==="settings"&&(!Array.isArray(input.scope)||input.scope.length>1000||input.scope.some(id=>typeof id!=="string")||typeof input.compact!=="boolean"))throw new RuntimeFailure("INVALID_INPUT","Invalid settings");
       }
       // One inference at a time shares one retrieval worker without loading weights per visitor.
-      if(processing)throw new RuntimeFailure("SESSION_LOCKED","A question is running");processing=true;
+      if(processing||deleting.has(match[1]))throw new RuntimeFailure("SESSION_LOCKED","A question is running or session is being deleted");processing=true;
       let session:WebSessionPort|undefined;
       let heartbeat:ReturnType<typeof setInterval>|undefined;
       try{

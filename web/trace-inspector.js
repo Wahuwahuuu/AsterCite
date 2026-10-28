@@ -14,6 +14,11 @@ export class TraceInspector {
     window.addEventListener('message',event=>{if(event.origin===location.origin&&event.source===this.popup&&event.data?.type==='astercite-trace-ready')this.deliver();});
   }
   prepareWindow(){this.popup=window.open('/trace.html','astercite-execution','popup,width=1480,height=960');}
+  reset(){
+    this.generation++;this.player?.dispose();this.player=null;
+    if(this.dialog.open)this.dialog.close();if(this.popup&&!this.popup.closed)this.popup.close();this.popup=null;
+    this.mode=null;this.detail=null;this.loader=null;this.run=null;this.runLoader=null;this.details={};this.errors={};this.versions={};this.activeId=null;this.pendingRun=false;this.loadingGeneration=null;this.content.replaceChildren();
+  }
   prepare(mode){
     this.generation++;this.player?.dispose();this.player=null;this.mode=mode;this.detail=null;this.loader=null;this.activeId=null;this.run=null;this.runLoader=null;
     this.dialog.classList.toggle('replay-dialog',mode==='run');this.retry.hidden=true;this.content.dataset.tab='input';this.content.replaceChildren();if(!this.dialog.open)this.dialog.showModal();

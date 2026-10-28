@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fauxAssistantMessage as reply } from "@earendil-works/pi-ai";
@@ -20,8 +20,60 @@ async function fixture(extra:Partial<WebServerOptions>={}){
   await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));const address=server.address();assert.ok(address&&typeof address==="object");
   const origin="http://127.0.0.1:"+address.port;
   const post=(path:string,v:unknown,headers:Record<string,string>={})=>fetch(origin+path,{method:"POST",headers:{Origin:origin,"Content-Type":"application/json","X-AsterCite-Request":"1",...headers},body:JSON.stringify(v)});
-  return {root,server,origin,post,calls:()=>calls,async close(){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});}};
+  const remove=(path:string,headers:Record<string,string>={})=>fetch(origin+path,{method:"DELETE",headers:{Origin:origin,"X-AsterCite-Request":"1",...headers}});
+  return {root,server,origin,post,remove,calls:()=>calls,async close(){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});}};
 }
+
+test("deleting an owned conversation removes its private files without opening an incompatible session",async()=>{
+  let opened=0;
+  const f=await fixture({factory:async()=>{opened++;throw new RuntimeFailure('INVALID_BUDGET','Old session');}});
+  try{
+    const a=await (await f.post('/api/sessions',{})).json(),b=await (await f.post('/api/sessions',{})).json();
+    const path='/api/sessions/'+a.id,directory=join(f.root,'.local/web/sessions',a.id),own={'X-AsterCite-Session':a.token};
+    for(const sub of ['turns','checkpoints','traces','translations','ledger']){await mkdir(join(directory,sub));await writeFile(join(directory,sub,'record.json'),'private conversation');}
+    await mkdir(join(f.root,'.cache/papers'),{recursive:true});await writeFile(join(f.root,'.cache/papers/shared.pdf'),'shared paper');
+    assert.equal((await f.remove(path)).status,403);
+    assert.equal((await f.remove(path,{'X-AsterCite-Session':b.token})).status,403);
+    assert.equal((await f.remove(path,{...own,Origin:'https://different.invalid'})).status,403);
+    assert.equal((await f.remove(path,{...own,'X-AsterCite-Request':''})).status,403);
+    assert.equal((await f.remove('/api/sessions/%2e%2e%2f'+a.id,own)).status,404);
+    assert.equal((await readdir(directory)).length,6);
+    const deleted=await f.remove(path,own);assert.equal(deleted.status,200);assert.deepEqual(await deleted.json(),{deleted:true,id:a.id});
+    await assert.rejects(readFile(join(directory,'owner.json')),{code:'ENOENT'});
+    assert.equal((await readFile(join(f.root,'.cache/papers/shared.pdf'),'utf8')),'shared paper');
+    assert.ok(await readFile(join(f.root,'.local/web/sessions',b.id,'owner.json')));assert.equal(opened,0);
+    assert.equal((await f.remove(path,own)).status,404);
+  }finally{await f.close();}
+});
+
+test("conversation deletion rejects a junction to another session and preserves shared data behind nested links",async()=>{
+  const f=await fixture();
+  try{
+    const a=await (await f.post('/api/sessions',{})).json(),b=await (await f.post('/api/sessions',{})).json();
+    const base=join(f.root,'.local/web/sessions'),directory=join(base,a.id),other=join(base,b.id),path='/api/sessions/'+a.id;
+    // These are freshly-created synthetic sessions in this test's temporary root.
+    assert.equal(directory,join(f.root,'.local','web','sessions',a.id));await rm(directory,{recursive:true});
+    await symlink(other,directory,'junction');
+    assert.equal((await f.remove(path,{'X-AsterCite-Session':b.token})).status,403);assert.ok(await readFile(join(other,'owner.json')));
+    await rm(directory);await mkdir(directory);await writeFile(join(directory,'owner.json'),await readFile(join(other,'owner.json')));
+    await symlink(other,join(directory,'linked-cache'),'junction');
+    assert.equal((await f.remove(path,{'X-AsterCite-Session':b.token})).status,200);assert.ok(await readFile(join(other,'owner.json')));
+  }finally{await f.close();}
+});
+
+test("conversation deletion waits for a source translation to finish",async()=>{
+  let release!:()=>void,started!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve;}),ready=new Promise<void>(resolve=>{started=resolve;});
+  const f=await fixture({translate:async()=>{started();await gate;return {cached:false,items:[{chunk_id:'source-one',text:'译文'}]};}});
+  try{
+    const owner=await (await f.post('/api/sessions',{})).json(),path='/api/sessions/'+owner.id,headers={'X-AsterCite-Session':owner.token};
+    const turn='11111111-1111-4111-8111-111111111111',directory=join(f.root,'.local/web/sessions',owner.id);
+    await mkdir(join(directory,'turns'));await writeFile(join(directory,'turns',turn+'.json'),JSON.stringify({web_turn:{sources:[{chunk_id:'source-one',text:'Original source.'}]}}));
+    const pending=f.post(path+'/translate',{turn_id:turn,chunk_ids:['source-one']},headers);await ready;
+    assert.equal((await f.remove(path,headers)).status,409);assert.ok(await readFile(join(directory,'owner.json')));
+    release();assert.equal((await pending).status,200);assert.equal((await f.remove(path,headers)).status,200);
+  }finally{release();await f.close();}
+});
 test("website defaults to demo on loopback and validates launch arguments",()=>{
   assert.deepEqual(parseWebArgs([]),{live:false,host:"127.0.0.1",port:4173,config:"configs/model.local.json",help:false});
   assert.equal(parseWebArgs(["--live","--port","4500"]).live,true);
@@ -42,6 +94,7 @@ test("question stream delivers actual activities before the answer and retains o
     const response=await f.post(path,{question:"fact"},headers);assert.match(response.headers.get("content-type")??"",/x-ndjson/);
     const reader=response.body!.getReader(),first=await reader.read();const beginning=new TextDecoder().decode(first.value);assert.match(beginning,/activity/);assert.ok(!beginning.includes('"result"'));
     assert.equal((await f.post(path,{question:"second"},headers)).status,409);assert.equal(calls,1);
+    assert.equal((await f.remove('/api/sessions/'+owner.id,headers)).status,409);
     release();let text=beginning;while(true){const item=await reader.read();if(item.done)break;text+=new TextDecoder().decode(item.value);}
     const lines=text.trim().split("\n").map(line=>JSON.parse(line));assert.equal(lines.at(-1).type,"result");assert.equal(lines.at(-1).view.turns[0].answer,"finished");assert.equal(lines.filter(l=>l.type==="activity").length,2);
   }finally{release();await f.close();}
@@ -140,7 +193,8 @@ test("website adapter runs the existing Harness, saves citations and restores me
     const events:WebActivity[]=[];
     const streamed:string[]=[];const first=await session.ask("p1 requested fact "+key,event=>events.push(event),update=>{assert.ok(update.sources.some(source=>source.chunk_id===seed.chunks[0].chunk_id));streamed.push(update.text);});assert.equal(first.turns[0].status,"completed");assert.ok(!JSON.stringify(first).includes(key));assert.equal(streamed.at(-1),first.turns[0].answer);
     assert.ok(events.some(e=>e.kind==="model"&&e.status==="running"));
-    assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.status==="completed"));
+    assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.status==="completed"&&e.paper_ids?.includes('p1')));
+    assert.ok(events.filter(e=>e.status==='running').every(e=>e.paper_ids===undefined));
     assert.equal(events.at(-1)?.kind,"memory");assert.equal(events.at(-1)?.status,"completed");
     assert.ok(!JSON.stringify(events).includes(key));assert.ok(!JSON.stringify(events).includes('"response_text"'));
     assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.detail.includes("[REDACTED]")));

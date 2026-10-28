@@ -24,9 +24,13 @@ export function markdownToHtml(text,{sources=[],interactive=true}={}){
   ],renderer:{html:({text})=>escape(text),link({href,tokens}){const text=this.parser.parseInline(tokens),url=safeUrl(href);return url?`<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`:text;},image:({href,text})=>safeUrl(href)?`<a href="${escape(href)}" target="_blank" rel="noopener noreferrer">图片：${escape(text)}</a>`:escape(text)}});
   return parser.parse(text.replace(/\[cite:[^\]\n]*$/u,''));
 }
-export function renderMarkdown(target,text,{sources=[],onCitation}={}){
-  const html=markdownToHtml(text,{sources,interactive:typeof onCitation==='function'});
+export function renderMarkdown(target,text,{sources=[],onCitation,onCitationHover}={}){
+  const html=markdownToHtml(text,{sources,interactive:typeof onCitation==='function'||typeof onCitationHover==='function'});
   target.innerHTML=DOMPurify.sanitize(html,{USE_PROFILES:{html:true,mathMl:true,svg:true},ADD_ATTR:['target'],FORBID_TAGS:['style','form'],FORBID_ATTR:['srcdoc']});
   target.classList.add('markdown-body');
-  if(onCitation)for(const button of target.querySelectorAll('button[data-citation-index]'))button.addEventListener('click',()=>onCitation(Number(button.dataset.citationIndex)));
+  for(const button of target.querySelectorAll('button[data-citation-index]')){
+    const index=Number(button.dataset.citationIndex);
+    if(onCitation)button.addEventListener('click',()=>onCitation(index));
+    if(onCitationHover){button.title='悬停定位 PDF 原文，点击查看依据';button.addEventListener('pointerenter',()=>onCitationHover(index));button.addEventListener('focus',()=>onCitationHover(index));}
+  }
 }
