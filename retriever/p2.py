@@ -562,10 +562,15 @@ class P2Corpus:
         return sorted(ranking, key=lambda row: (-row[0], row[1]["chunk_id"]))[:CANDIDATES]
 
     def retrieve_chunks(self, params: dict) -> dict:
-        if set(params) - {"query", "paper_ids", "top_k", "allowed_paper_ids"}:
+        if set(params) - {"query", "paper_ids", "top_k", "allowed_paper_ids", "reading_mode", "offset"}:
             raise ParameterError()
         query = _query(params.get("query"))
-        top_k = _bounded_integer(params.get("top_k", 5), 1, 5)
+        reading = params.get("reading_mode") == "workbench-v1"
+        if "reading_mode" in params and not reading or "offset" in params and not reading:
+            raise ParameterError()
+        top_k = _bounded_integer(params.get("top_k", 8 if reading else 5), 1, 20 if reading else 5)
+        offset = params.get("offset", 0)
+        if type(offset) is not int or not 0 <= offset <= 512: raise ParameterError()
         requested = params.get("paper_ids")
         if (not isinstance(requested, list) or not 1 <= len(requested) <= 4
                 or not all(isinstance(pid, str) and pid in self.papers for pid in requested)
@@ -585,9 +590,9 @@ class P2Corpus:
             if self.profile == "rrf_rerank" and ranking:
                 scored = self.pool.rerank(effective_query, [chunk["text"] for _, chunk in ranking])
                 ranking = sorted(zip(scored, [chunk for _, chunk in ranking]), key=lambda row: (-row[0], row[1]["chunk_id"]))
-        return {"chunks": [dict(chunk) for _, chunk in ranking[:top_k]], "backend": self.backend,
+        return {"chunks": [dict(chunk) for _, chunk in ranking[offset:offset+top_k]], "backend": self.backend,
                 "index_version": self.index_version, "query": query, "effective_query": effective_query,
-                "query_normalization": QUERY_NORMALIZATION}
+                "query_normalization": QUERY_NORMALIZATION, **({"selection":{"offset":offset,"returned":len(ranking[offset:offset+top_k]),"total":len(ranking),"next_offset":offset+len(ranking[offset:offset+top_k]),"has_more":offset+top_k<len(ranking)}} if reading else {})}
 
     def close(self) -> None:
         if self.pool is not None:

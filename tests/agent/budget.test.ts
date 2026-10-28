@@ -5,6 +5,23 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionBudget } from "../../agent/budget.ts";
 const identity="a".repeat(64);
+test('paper-count allowance is fixed at reservation and survives recovery without refunding attempts',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'astercite-dynamic-budget-'));let budget:SessionBudget|undefined;
+  try{budget=await SessionBudget.openWeb(root,3);await budget.reserve('five-papers','comparison',27);
+    for(let i=0;i<14;i++)await budget.admit('five-papers','request-'+i);await budget.close();budget=undefined;
+    budget=await SessionBudget.openWeb(root,3);assert.equal(budget.summary().request_limit_per_turn,27);assert.equal(budget.summary().model_attempts,14);
+    for(let i=14;i<27;i++)await budget.admit('five-papers','request-'+i);await assert.rejects(budget.admit('five-papers','extra'),/admission/);
+    await assert.rejects(budget.reserve('invalid','question',65),/limit/);
+    await budget.reserve('ordinary','question');for(let i=0;i<12;i++)await budget.admit('ordinary','ordinary-'+i);await assert.rejects(budget.admit('ordinary','extra'),/admission/);
+  }finally{await budget?.close();await rm(root,{recursive:true,force:true});}
+});
+test('a later ledger generation cannot raise an already reserved allowance',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'astercite-immutable-budget-'));let budget:SessionBudget|undefined;
+  try{budget=await SessionBudget.openWeb(root,3);await budget.reserve('five-papers','comparison',27);
+    budget.state.turns[0].request_limit=30;await budget.setScope(['p1']);await budget.close();budget=undefined;
+    await assert.rejects(SessionBudget.openWeb(root,3),/cannot change/);
+  }finally{await budget?.close();await rm(root,{recursive:true,force:true});}
+});
 test("failed/reserved turns are charged; persisted attempts stay capped at 12 after reopening",async()=>{
   const root=await mkdtemp(join(tmpdir(),"astercite-budget-"));let b:SessionBudget|undefined;
   try{

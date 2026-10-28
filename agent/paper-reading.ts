@@ -6,7 +6,7 @@ export function asksForAbstract(question:string):boolean{
 }
 export function abstractReadingSection(question:string,query?:string):'abstract'|undefined{
   if(!asksForAbstract(question))return;
-  const otherSections=/全文|正文|引言|(?:方法|实验|结果|结论)(?:章节|部分)|摘要.{0,12}(?:和|与|及).{0,8}(?:方法|实验|结果|结论)|\b(?:full text|introduction|methods? section|results? section|conclusion)\b/iu.test(question);
+  const otherSections=/全文|正文|引言|表格|公式|(?:方法|实验|结果|结论)(?:章节|部分)|摘要.{0,12}(?:和|与|及).{0,8}(?:方法|实验|结果|结论)|\b(?:full text|introduction|methods? section|results? section|conclusion|tables?|equations?|formulas?)\b/iu.test(question);
   if(!otherSections||query!==undefined&&asksForAbstract(query))return 'abstract';
 }
 

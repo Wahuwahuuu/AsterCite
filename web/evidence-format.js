@@ -1,9 +1,12 @@
 const compact=text=>text.replace(/\s+/gu,' ').trim();
 const heading=line=>/^\d+\.\s+[A-Z][A-Z\s-]{2,}$/u.test(line);
 const point=line=>/^(?:[•●]\s*|\d+[.)]\s+)/u.test(line);
+const tableRule=line=>{const cells=line.trim().replace(/^\||\|$/gu,'').split('|');return cells.length>1&&cells.every(cell=>/^:?-{3,}:?$/u.test(cell.trim()));};
 
 // PDF layout is handled only for reading; the stored source stays untouched.
 export function parseEvidenceText(text){
+  const original=text.replace(/\r\n?/g,'\n');
+  if(original.split('\n').some(tableRule)||/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]*?\\\)|\$[^$\n]+\$/u.test(original))return [{kind:'markdown',text:original}];
   const lines=text.replace(/\r\n?/g,'\n').split('\n').map(line=>line.trim());
   const blocks=[];
   const next=from=>{while(from<lines.length&&!lines[from])from++;return from;};
@@ -35,7 +38,14 @@ export function evidencePreview(blocks,limit=520,maxRows=6){
   const preview=[];let remaining=limit;
   for(const [index,block] of blocks.entries()){
     if(remaining<=0)return {blocks:preview,hasMore:true};
-    if(block.kind==='table'){
+    if(block.kind==='markdown'){
+      const lines=block.text.split('\n'),rule=lines.findIndex(tableRule);
+      if(rule>0){let end=rule+1;while(end<lines.length&&lines[end].trim().startsWith('|'))end++;
+        if(end-rule-1>maxRows){preview.push({...block,text:lines.slice(0,rule+1+maxRows).join('\n')+`\n\n还有 ${end-rule-1-maxRows} 行，展开查看`});return {blocks:preview,hasMore:true};}
+      }
+      // A formula or complete table row is indivisible; the reading preview has a soft text budget.
+      preview.push(block);remaining-=block.text.length;
+    }else if(block.kind==='table'){
       const rows=block.rows.slice(0,maxRows),omittedRows=block.rows.length-rows.length;
       preview.push({...block,rows,omittedRows});
       remaining-=block.caption.length+block.headers.join(' ').length+rows.flat().join(' ').length;

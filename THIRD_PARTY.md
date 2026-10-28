@@ -9,6 +9,7 @@
 | [BGE-M3](https://huggingface.co/BAAI/bge-m3) | 稠密向量检索 | MIT |
 | [BGE-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) | Cross-Encoder 重排 | Apache-2.0 |
 | FAISS、PyTorch、Transformers、rank-bm25 | 检索依赖 | 各上游包许可 |
+| [Qdrant Edge](https://qdrant.tech/documentation/edge/) | 本地长期记忆的向量存储与检索 | Apache-2.0 |
 | [Node.js](https://nodejs.org/) | Windows 版内置 JavaScript 运行时 | MIT 及附带第三方许可 |
 | [CPython](https://www.python.org/)、[python-build-standalone](https://github.com/astral-sh/python-build-standalone) | Windows 版内置 Python 运行时 | PSF 及附带第三方许可 |
 | [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) | Windows 运行依赖 | Microsoft 软件许可 |

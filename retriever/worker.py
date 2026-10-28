@@ -232,6 +232,16 @@ def handle_request(corpus: SmokeCorpus, request: Any) -> dict[str, Any]:
             result = corpus.search_papers(request["params"])
         elif request["method"] == "retrieve_chunks":
             result = corpus.retrieve_chunks(request["params"])
+        elif request["method"] == "read_scientific_sources" and hasattr(corpus, "scientific_reader"):
+            try:
+                result = corpus.scientific_reader.retrieve(request["params"], corpus.papers, getattr(corpus, "pool", None))
+            except ValueError:
+                raise ParameterError()
+        elif request["method"] == "memory_operation" and getattr(corpus, "memory_store", None) is not None:
+            try:
+                result = corpus.memory_store.dispatch(request["params"], corpus.papers)
+            except ValueError:
+                raise ParameterError()
         else:
             return _error(request_id, "METHOD_NOT_FOUND", "Method is not supported.")
         return {"version": 1, "request_id": request_id, "result": result}
@@ -254,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--models-dir", type=Path)
     parser.add_argument("--profile", choices=("dense", "bm25", "rrf", "rrf_rerank"))
     parser.add_argument("--device", choices=("cuda", "cpu"))
+    parser.add_argument("--scientific-cache-dir", type=Path)
+    parser.add_argument("--memory-dir", type=Path)
     args = parser.parse_args(argv)
     p2 = args.index_dir is not None
     if p2 and (args.models_dir is None or args.profile is None):
@@ -271,6 +283,15 @@ def main(argv: list[str] | None = None) -> int:
             corpus = P2Corpus.load(args.index_dir, args.models_dir, args.corpus_dir, args.profile, args.device)
         else:
             corpus = SmokeCorpus.load(args.corpus_dir)
+        if args.scientific_cache_dir is not None:
+            if __package__ in (None, ""):
+                sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from retriever.scientific_reading import ScientificReader
+            corpus.scientific_reader = ScientificReader(args.scientific_cache_dir, corpus.index_version)
+        if args.memory_dir is not None and p2:
+            from retriever.long_memory import MemoryStore
+            from retriever.p2 import DENSE_REPO, DENSE_REVISION
+            corpus.memory_store = MemoryStore(args.memory_dir, corpus.vectors.shape[1], corpus.pool.encode, DENSE_REPO + '@' + DENSE_REVISION) if corpus.pool else None
     except Exception as exc:
         if getattr(exc, "code", None) == "MODEL_OOM":
             sys.stderr.write("PiPaper worker startup failed: MODEL_OOM; restart entire batch on CPU.\n")
@@ -295,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.buffer.flush()
         except BrokenPipeError:
             return 0
+    if getattr(corpus, "memory_store", None): corpus.memory_store.close()
     return 0
 
 

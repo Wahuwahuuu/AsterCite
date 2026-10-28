@@ -9,7 +9,11 @@ import { readConfig, createUserRuntime, containedPath, sha } from "./config.ts";
 import { RuntimeFailure, errorText, redactText } from "./contracts.ts";
 import { SessionBudget } from "./budget.ts";
 import { MainPaperHarness } from "./session-main-v2.ts";
+import {ScientificReading} from './scientific-reading.ts';
+import {LongTermMemory} from './long-term-memory.ts';
 import type { ControlledSnapshot, ControlledTurnRecord } from "./main-controls.ts";
+import {comparisonBudget} from './multi-paper.ts';
+import {selectedTargets} from './selected-scope.ts';
 
 export const HELP=`AsterCite — 固定论文库的多轮证据问答
 npm run paper -- [--config configs/model.local.json] [--session 会话名] [--ask "问题"]
@@ -18,7 +22,11 @@ npm run paper -- [--config configs/model.local.json] [--session 会话名] [--as
 /corpus [关键词]     列出论文
 /scope [ID,...|all]   显示/设置本轮及后续轮的论文范围
 /trace               上轮阶段、请求与检索记录
+/tasks               上轮逐项任务进度
 /memory              结构化记忆
+/long-memory         查看跨会话长期记忆
+/long-memory pause|resume  暂停/恢复长期记忆
+/long-memory forget ID|clear  删除一条/清空长期记忆
 /compact             在下一轮预算内执行原生压缩
 /budget              会话轮数与请求尝试
 /quit                保存后退出
@@ -39,7 +47,7 @@ export function parseArgs(args:string[]){
 export function visibleTurn(record:ControlledTurnRecord){
   return {version:1,turn_id:record.user_turn_id,status:record.status,answer_policy:record.answer_policy,final_answer:record.final_answer,final_structure:record.final_structure,final_request_id:record.final_request_id,
     answer_adjustments:(record.reliability_adaptations??[]).map(({stage,request_id,kind})=>({stage,request_id,kind})),
-    citation_attribution:record.citation_attribution,
+    citation_attribution:record.citation_attribution,comparison:record.comparison,execution:record.execution,tasks:record.tasks,
     elapsed_ms:record.elapsed_ms,failure_code:record.failure_code,error:record.error,citation_validity:record.citation_validity,
     requests:record.requests.map(r=>({request_id:r.request_id,admitted:r.admitted,phase:r.phase,stage:r.stage,status:r.status,http_attempts:r.http_attempts,
       http_status:r.http_status,elapsed_ms:r.elapsed_ms,usage:r.usage,usage_status:r.usage_status,pricing_status:"unknown",tool_context:r.tool_context})),
@@ -68,38 +76,51 @@ export async function runCli(args:string[],root=PROJECT_ROOT):Promise<number>{
   const directory=await containedPath(root,".local/sessions/"+name);
   const budget=await SessionBudget.open(directory,assets.implementationId,config.session.max_turns);
   let harness:MainPaperHarness|undefined,worker:Awaited<ReturnType<typeof createWorker>>|undefined,rl:ReturnType<typeof createInterface>|undefined;
-  let activeTurn="";
+  let activeTurn="",activeController:AbortController|undefined;
+  const interrupt=()=>{if(activeController){activeController.abort();console.log('\n正在停止本轮，已收到的回答会保存。');}else rl?.close();};
+  process.on('SIGINT',interrupt);
   try{
     const snapshot=await restoreLatest(directory,budget);
     const {runtime,model}=await createUserRuntime(config.model,key);
     worker=await createWorker(assets,config);
+    const scientificSources=await ScientificReading.open(root,assets.indexVersion,new Set(assets.publicPapers.map(p=>p.paper_id)),worker);
+    const memorySettings=await containedPath(root,'.local/memory/cli-settings.json');let memoryEnabled=true;
+    try{memoryEnabled=JSON.parse(await readFile(memorySettings,'utf8')).enabled!==false;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    let longMemory=new LongTermMemory(worker,'cli:local',assets.publicPapers,[key],memoryEnabled);
     harness=await MainPaperHarness.create({cwd:root,modelRuntime:runtime,model,worker,knownPaperIds:new Set(assets.publicPapers.map(p=>p.paper_id)),
-      secrets:[key],thinkingLevel:config.model.thinking_level,questionPreparation:"light-v1",answerPolicy:'workbench-v1',
-      controls:{arm:"C",reflect:false,compaction:config.session.compaction,reliability:"candidate",implementation_id:assets.implementationId},
+      secrets:[key],thinkingLevel:config.model.thinking_level,questionPreparation:"light-v1",answerPolicy:'workbench-v1',completionPolicy:'turn-state-v1',
+      controls:{arm:"C",reflect:false,compaction:config.session.compaction,reliability:"candidate",implementation_id:assets.implementationId},selectedScopeCoverage:true,
       p2:{profile:"B",executionVersion:"full-v1",indexVersion:assets.indexVersion,evidenceIndex:assets.evidenceIndex,publicPapers:assets.publicPapers,
-        commonPrompt:assets.commonPrompt,nlu:true,reflect:false,structuredMemory:true,answerContract:"full-v1-json",
+        scientificSources,commonPrompt:assets.commonPrompt,nlu:true,reflect:false,structuredMemory:true,answerContract:"full-v1-json",
         stageOutputLimits:{question_frame:config.model.max_output_tokens,evidence_check:config.model.max_output_tokens,generation:config.model.max_output_tokens}},
       controlledSnapshot:snapshot,maxRequests:12,requestTimeoutMs:config.session.request_timeout_ms,turnTimeoutMs:config.session.turn_timeout_ms,
       authorizeRequest:async r=>{await budget.admit(activeTurn,r.request_id);}});
     let scope=[...budget.state.scope],last:ReturnType<typeof visibleTurn>|undefined;
     await mkdir(join(directory,"turns"),{recursive:true});await mkdir(join(directory,"checkpoints"),{recursive:true});
     const ask=async(question:string)=>{
-      const id=randomUUID();await budget.reserve(id,question);activeTurn=id;
+      const controller=new AbortController();activeController=controller;
+      try{
+      const id=randomUUID(),limit=comparisonBudget(question,selectedTargets(question,scope,assets.publicPapers))?.requests??12;await budget.reserve(id,question,limit);activeTurn=id;
+      const recall=await longMemory.recall(question,scope,controller.signal);harness!.setLongTermMemory(recall);
       if(budget.state.pending_compaction){harness!.requestCompaction();await budget.compact(false);}
-      const result=await harness!.runTurn(question,scope,id),publicResult=visibleTurn(result);
+      const result=await harness!.runTurn(question,scope,id,controller.signal),publicResult=visibleTurn(result);
+      const memoryWrite=controller.signal.aborted?{note:'本轮已停止，未写入长期记忆。'}:await longMemory.remember(name,id,question,harness!.memory.state,result.status,harness!.getLongTermMemoryDigest(),controller.signal);
       const snap=redactText(JSON.stringify(harness!.snapshot())+"\n",[key]);
       await writeFile(join(directory,"checkpoints",id+".json"),snap,{flag:"wx"});
       const saved=redactText(JSON.stringify({...publicResult,question,snapshot_sha256:sha(snap)})+"\n",[key]);
       await writeFile(join(directory,"turns",id+".json"),saved,{flag:"wx"});
       await budget.finish(id,sha(saved));last=publicResult;
       console.log("\n"+result.final_answer+"\n");
+      console.log(`${recall.note} ${memoryWrite.note}`);
       const usage=result.requests.map(r=>r.usage.totalTokens);
-      console.log(`状态 ${result.status} · 请求 ${result.requests.filter(r=>r.admitted).length}/12 · token ${usage.some(v=>v===null)?"unknown":usage.reduce<number>((n,v)=>n+(v??0),0)} · 费用 unknown`);
+      console.log(`状态 ${result.status} · 请求 ${result.requests.filter(r=>r.admitted).length}/${limit} · token ${usage.some(v=>v===null)?"unknown":usage.reduce<number>((n,v)=>n+(v??0),0)} · 费用 unknown`);
       return result.status==="completed"?0:1;
+      }finally{activeController=undefined;}
     };
     if(flags.ask!==undefined)return await ask(flags.ask);
     console.log(`AsterCite | 会话 ${name} | ${assets.publicPapers.length} 篇论文 | Reflect 关闭\n输入 /help 查看命令；退出后使用 --session ${name} 恢复。`);
     rl=createInterface({input:process.stdin,output:process.stdout});
+    rl.on('SIGINT',interrupt);
     while(true){
       let line:string;try{line=(await rl.question("你> ")).trim();}catch{break;}
       if(!line)continue;
@@ -116,13 +137,20 @@ export async function runCli(args:string[],root=PROJECT_ROOT):Promise<number>{
           console.log(scope.length?scope.join(", "):"全部论文");continue;
         }
         if(command==="/trace"){console.log(last?JSON.stringify({stages:last.stages,requests:last.requests,tools:last.tools},null,2):"本次打开后尚无问答");continue;}
+        if(command==='/tasks'){console.log(last?.tasks?JSON.stringify(last.tasks,null,2):'本次打开后尚无任务进度');continue;}
         if(command==="/memory"){console.log(redactText(JSON.stringify(harness.memory.state,null,2),[key]));continue;}
+        if(command==='/long-memory'){
+          if(value==='pause'||value==='resume'){memoryEnabled=value==='resume';await mkdir(join(root,'.local/memory'),{recursive:true});await writeFile(memorySettings,JSON.stringify({enabled:memoryEnabled})+'\n');longMemory=new LongTermMemory(worker,'cli:local',assets.publicPapers,[key],memoryEnabled);console.log(memoryEnabled?'长期记忆已开启':'长期记忆已暂停');}
+          else if(value==='clear'){await longMemory.clear();console.log('长期记忆已清空');}
+          else if(value.startsWith('forget ')){await longMemory.remove(value.slice(7).trim());console.log('已删除这条记忆');}
+          else console.log(JSON.stringify(await longMemory.list(),null,2));continue;
+        }
         if(command==="/compact"){if(config.session.compaction!=="native")throw new RuntimeFailure("INVALID_CONFIG","当前配置关闭了原生压缩");await budget.compact(true);console.log("已登记；下一次提问时执行压缩，计入该轮请求预算。");continue;}
         console.log("未知命令，输入 /help。");
       }catch(e){console.error(errorText(e,[key]));}
     }
     return 0;
-  }finally{rl?.close();harness?.dispose();worker?.close();await budget.close();}
+  }finally{process.removeListener('SIGINT',interrupt);rl?.close();harness?.dispose();worker?.close();await budget.close();}
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href){
   try{process.exitCode=await runCli(process.argv.slice(2));}

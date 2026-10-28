@@ -11,6 +11,8 @@ import { PaperWebSession,readSavedTrace, type WebSessionFactory, type WebSession
 import { PaperPdfCache, originalPdfUrl } from "./paper-pdf.ts";
 import { SourceTranslation,type SourceTranslator } from "./source-translation.ts";
 import {ContextTracker,type ContextView} from './workbench-context.ts';
+import {ScientificReading} from './scientific-reading.ts';
+import {LongTermMemory,MemoryOwners,type MemoryOwner} from './long-term-memory.ts';
 
 export interface WebServerOptions {
   root:string; mode:"demo"|"live"; factory?:WebSessionFactory; papers?:readonly Paper[];
@@ -18,6 +20,7 @@ export interface WebServerOptions {
   pdfFetch?:typeof fetch;
   translate?:SourceTranslator;
   context?:ContextView;
+  memoryFactory?:(owner:MemoryOwner)=>LongTermMemory;
 }
 const STATIC_FILES:Record<string,{file:string;type:string}>={
   "/":{file:"index.html",type:"text/html; charset=utf-8"},
@@ -39,6 +42,7 @@ const STATIC_FILES:Record<string,{file:string;type:string}>={
   ,"/trace-inspector.js":{file:"trace-inspector.js",type:"text/javascript; charset=utf-8"}
   ,"/trace.css":{file:"trace.css",type:"text/css; charset=utf-8"}
   ,"/session-panel.js":{file:"session-panel.js",type:"text/javascript; charset=utf-8"}
+  ,"/long-memory.js":{file:"long-memory.js",type:"text/javascript; charset=utf-8"}
   ,"/markdown.js":{file:"markdown.js",type:"text/javascript; charset=utf-8"}
   ,"/answer-preview.js":{file:"answer-preview.js",type:"text/javascript; charset=utf-8"}
   ,"/reader-follow.js":{file:"reader-follow.js",type:"text/javascript; charset=utf-8"}
@@ -63,6 +67,7 @@ function failure(code:string):{status:number;message:string}{
     INVALID_SESSION:{status:409,message:"会话记录无法完整读取，原文件已保留。请重试恢复。"},INVALID_BUDGET:{status:409,message:"会话用量记录不完整，原文件已保留。请检查本地会话资料。"},
     INVALID_SNAPSHOT:{status:409,message:"暂时无法恢复这段会话的上下文，历史记录已保留。"}
     ,INVALID_PATH:{status:403,message:"这个会话的保存位置无法访问。"}
+    ,MEMORY_UNAVAILABLE:{status:503,message:'长期记忆暂不可用，论文问答可以继续。请稍后重试。'}
     ,PDF_UNAVAILABLE:{status:502,message:"PDF 暂时无法加载，请重试或打开官方原文。"}
     ,TRANSLATION_FAILED:{status:502,message:"译文暂时未能生成，可重试或查看英文原文。"}
     ,TRANSLATION_LIMIT:{status:429,message:"本轮译文请求已达到上限，可继续阅读英文原文。"}
@@ -101,7 +106,11 @@ export async function createWebServer(options:WebServerOptions){
   const pdfs=new PaperPdfCache(options.root,new Set((papers??[]).map(p=>p.paper_id)),options.pdfFetch);
   let processing=false,creating=false;
   const liveSessions=new Map<string,WebSessionPort>();
+  const activeRuns=new Map<string,{id:string;controller:AbortController}>();
+  const pendingStops=new Map<string,number>(),finishedRuns=new Map<string,number>();
+  const pruneRuns=()=>{const now=Date.now();for(const map of [pendingStops,finishedRuns]){for(const [key,until] of map)if(until<now)map.delete(key);while(map.size>128)map.delete(map.keys().next().value!);}};
   const deleting=new Set<string>(),translations=new Map<string,number>();
+  const memoryOwners=new MemoryOwners(options.root);
   const server=createServer(async(req,res)=>{
     headers(res);
     try{
@@ -113,7 +122,7 @@ export async function createWebServer(options:WebServerOptions){
       if(url.search)throw new RuntimeFailure("INVALID_INPUT","Query not supported");
       if(method==="GET"&&url.pathname==="/healthz"){json(res,200,{status:"ok",mode:options.mode});return;}
       if(method==="GET"&&url.pathname==="/api/config"){
-        json(res,200,{mode:options.mode,model:options.modelLabel??null,context:options.context??null,access_token_required:!!options.accessToken,
+        json(res,200,{mode:options.mode,model:options.modelLabel??null,context:options.context??null,access_token_required:!!options.accessToken,memory_supported:Boolean(options.memoryFactory),
           papers:papers?.map(p=>({paper_id:p.paper_id,title:p.title,pdf_url:originalPdfUrl(p.paper_id)}))??[]});return;
       }
       if(method==="GET"&&STATIC_FILES[url.pathname]){
@@ -132,29 +141,60 @@ export async function createWebServer(options:WebServerOptions){
         const origin=options.publicOrigin??"http://"+host;
         if(req.headers.origin!==origin||req.headers["x-astercite-request"]!=="1")throw new RuntimeFailure("INVALID_ORIGIN","Origin required");
       }
+      const memoryCredential=String(req.headers['x-astercite-memory']??'');
+      if(method==='POST'&&url.pathname==='/api/memory/profiles'&&options.memoryFactory){const input=await body(req);only(input,[]);json(res,201,await memoryOwners.create());return;}
+      if(method==='GET'&&url.pathname==='/api/memory/profile'&&options.memoryFactory){const owner=await memoryOwners.authenticate(memoryCredential);json(res,200,{enabled:owner.enabled});return;}
+      if(url.pathname==='/api/memory'&&options.memoryFactory){
+        if(processing)throw new RuntimeFailure('SESSION_LOCKED','A question is running');
+        const owner=await memoryOwners.authenticate(memoryCredential),memory=options.memoryFactory(owner);
+        processing=true;try{
+          if(method==='GET'){json(res,200,{...await memory.list(),enabled:owner.enabled});return;}
+          if(method!=='POST')throw new RuntimeFailure('NOT_FOUND','No memory operation');
+          const input=await body(req);only(input,['action','id','content','kind','paper_ids','enabled','cursor']);
+          if(input.action==='settings'){if(typeof input.enabled!=='boolean')throw new RuntimeFailure('INVALID_INPUT','Memory enabled must be boolean');const configured=await memoryOwners.configure(memoryCredential,input.enabled);json(res,200,{enabled:configured.enabled});return;}
+          if(input.action==='list'){if(input.cursor!==undefined&&typeof input.cursor!=='string')throw new RuntimeFailure('INVALID_INPUT','Invalid memory cursor');json(res,200,{...await memory.list(input.cursor as string|undefined),enabled:owner.enabled});return;}
+          if(input.action==='save'){
+            if(typeof input.content!=='string'||input.id!==undefined&&typeof input.id!=='string'||input.kind!==undefined&&!['note','preference'].includes(String(input.kind))||input.paper_ids!==undefined&&(!Array.isArray(input.paper_ids)||input.paper_ids.some(id=>typeof id!=='string')))throw new RuntimeFailure('INVALID_INPUT','Invalid memory entry');
+            const entry=await memory.save({id:input.id as string|undefined,kind:(input.kind??'note') as 'note'|'preference',content:input.content,paper_ids:input.paper_ids as string[]|undefined,edited:true});json(res,200,{entry});return;
+          }
+          if(input.action==='delete'){if(typeof input.id!=='string')throw new RuntimeFailure('INVALID_INPUT','Missing memory ID');await memory.remove(input.id);json(res,200,{deleted:true});return;}
+          if(input.action==='clear'){await memory.clear();json(res,200,{deleted:true});return;}
+          throw new RuntimeFailure('INVALID_INPUT','Unknown memory operation');
+        }finally{processing=false;}
+      }
       if(method==="POST"&&url.pathname==="/api/sessions"){
         const v=await body(req);only(v,[]);
         if(creating)throw new RuntimeFailure("CAPACITY","Creation busy");creating=true;
         try{
           if((await readdir(sessionPath)).length>=(options.maxSessions??100))throw new RuntimeFailure("CAPACITY","Session limit");
           const id=randomUUID(),token=randomBytes(32).toString("hex"),dir=await containedPath(options.root,".local/web/sessions/"+id);
-          await mkdir(dir);await writeFile(join(dir,"owner.json"),JSON.stringify({token_digest:sha(token),created_at:new Date().toISOString()}),{flag:"wx"});
+          const memoryOwner=options.memoryFactory&&memoryCredential?await memoryOwners.authenticate(memoryCredential):undefined;
+          await mkdir(dir);await writeFile(join(dir,"owner.json"),JSON.stringify({token_digest:sha(token),created_at:new Date().toISOString(),...(memoryOwner?{memory_profile:memoryOwner.id}:{})}),{flag:"wx"});
           json(res,201,{id,token});return;
         }finally{creating=false;}
       }
-      const match=/^\/api\/sessions\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/(question(?:\/stream)?|settings|translate|traces\/[a-f0-9-]{36}\/(?:host-)?[a-f0-9-]{36}))?$/u.exec(url.pathname);
+      const match=/^\/api\/sessions\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/(question(?:\/stream)?|stop|settings|translate|memory\/import|traces\/[a-f0-9-]{36}\/(?:host-)?[a-f0-9-]{36}))?$/u.exec(url.pathname);
       if(!match)throw new RuntimeFailure("NOT_FOUND","No session route");
       const dir=await containedPath(options.root,".local/web/sessions/"+match[1]);
-      let owner:{token_digest:string};try{owner=JSON.parse(await readFile(await containedPath(dir,"owner.json"),"utf8"));}catch{throw new RuntimeFailure("NOT_FOUND","Missing session");}
+      let owner:{token_digest:string;memory_profile?:string};try{owner=JSON.parse(await readFile(await containedPath(dir,"owner.json"),"utf8"));}catch{throw new RuntimeFailure("NOT_FOUND","Missing session");}
       const token=String(req.headers["x-astercite-session"]??"");
       if(!token||!safeEqual(owner.token_digest,sha(token)))throw new RuntimeFailure("FORBIDDEN","Session owner differs");
       if(deleting.has(match[1]))throw new RuntimeFailure("SESSION_LOCKED","Session is being deleted");
+      if(method==='POST'&&match[2]==='stop'){
+        const input=await body(req);only(input,['request_id']);
+        if(typeof input.request_id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(input.request_id))throw new RuntimeFailure('INVALID_INPUT','Invalid request ID');
+        pruneRuns();const run=activeRuns.get(match[1]),key=match[1]+':'+input.request_id;
+        if(run?.id===input.request_id){run.controller.abort();json(res,200,{stopped:true,request_id:run.id});return;}
+        if(!run&&!finishedRuns.has(key)){pendingStops.set(key,Date.now()+30000);pruneRuns();json(res,200,{stopped:true,queued:true,request_id:input.request_id});return;}
+        json(res,200,{stopped:false,request_id:input.request_id});return;
+      }
       if(method==="DELETE"&&!match[2]){
         if(processing)throw new RuntimeFailure("SESSION_LOCKED","A session is running");
         if(translations.has(match[1]))throw new RuntimeFailure("TRANSLATION_BUSY","Session translation is running");
         deleting.add(match[1]);
         try{
           const target=await deletionTarget(sessionPath,dir,match[1]);
+          if(owner.memory_profile&&options.memoryFactory)await options.memoryFactory({id:owner.memory_profile,enabled:true}).removeSession(match[1]);
           await rm(target,{recursive:true,maxRetries:2,retryDelay:100});
           json(res,200,{deleted:true,id:match[1]});return;
         }finally{deleting.delete(match[1]);}
@@ -171,42 +211,50 @@ export async function createWebServer(options:WebServerOptions){
         const input=await body(req);only(input,["turn_id","chunk_ids"]);
         if(typeof input.turn_id!=="string"||!/^[a-f0-9-]{36}$/u.test(input.turn_id)||!Array.isArray(input.chunk_ids)||input.chunk_ids.length<1||input.chunk_ids.length>2||new Set(input.chunk_ids).size!==input.chunk_ids.length||input.chunk_ids.some(id=>typeof id!=="string"||id.length>300))throw new RuntimeFailure("INVALID_INPUT","Invalid translation source");
         const saved=JSON.parse(await readFile(await containedPath(dir,`turns/${input.turn_id}.json`),"utf8"));
-        const sources=(input.chunk_ids as string[]).map(id=>{const source=saved.web_turn?.sources?.find((s:{chunk_id:string})=>s.chunk_id===id);if(!source||typeof source.text!=="string"||source.text.length>12000)throw new RuntimeFailure("INVALID_INPUT","Source is not cited by this turn");return {chunk_id:id,text:source.text};});
+        const sources=(input.chunk_ids as string[]).map(id=>{const source=saved.web_turn?.sources?.find((s:{chunk_id:string})=>s.chunk_id===id);if(!source||typeof source.text!=="string"||Array.from(source.text).length>16000)throw new RuntimeFailure("INVALID_INPUT","Source is not cited by this turn");return {chunk_id:id,text:source.text};});
         json(res,200,await options.translate(sources,dir,input.turn_id));return;
         }finally{const count=(translations.get(match[1])??1)-1;if(count)translations.set(match[1],count);else translations.delete(match[1]);}
       }
       if(processing)throw new RuntimeFailure("SESSION_LOCKED","A question is running");
-      let action:"view"|"ask"|"settings";
+      let action:"view"|"ask"|"settings"|'import';
       if(method==="GET"&&!match[2])action="view";
       else if(method==="POST"&&match[2]?.startsWith("question"))action="ask";
       else if(method==="POST"&&match[2]==="settings")action="settings";
+      else if(method==='POST'&&match[2]==='memory/import')action='import';
       else throw new RuntimeFailure("NOT_FOUND","Unsupported method");
       let input:Record<string,unknown>={};
       if(action!=="view"){
         input=await body(req);
-        only(input,action==="ask"?["question"]:["scope","compact"]);
+        only(input,action==="ask"?["question","request_id"]:action==='import'?[]:["scope","compact"]);
         if(action==="ask"&&(typeof input.question!=="string"||!input.question.trim()||Array.from(input.question).length>12000))throw new RuntimeFailure("INVALID_INPUT","Invalid question");
+        if(action==='ask'&&input.request_id!==undefined&&(typeof input.request_id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(input.request_id)))throw new RuntimeFailure('INVALID_INPUT','Invalid request ID');
         if(action==="settings"&&(!Array.isArray(input.scope)||input.scope.length>1000||input.scope.some(id=>typeof id!=="string")||typeof input.compact!=="boolean"))throw new RuntimeFailure("INVALID_INPUT","Invalid settings");
       }
       // One inference at a time shares one retrieval worker without loading weights per visitor.
       if(processing||deleting.has(match[1]))throw new RuntimeFailure("SESSION_LOCKED","A question is running or session is being deleted");processing=true;
       let session:WebSessionPort|undefined;
       let heartbeat:ReturnType<typeof setInterval>|undefined;
+      const run=action==='ask'?{id:(input.request_id as string|undefined)??randomUUID(),controller:new AbortController()}:undefined;
+      if(run){pruneRuns();activeRuns.set(match[1],run);const key=match[1]+':'+run.id;if(pendingStops.delete(key))run.controller.abort();}
       try{
         // Resolve all existing private subpaths too, before the adapter can open them.
         for(const sub of ["ledger","turns","checkpoints","session.lock"])await containedPath(dir,sub);
-        session=await options.factory(dir);
+        const memoryOwner=options.memoryFactory&&memoryCredential?await memoryOwners.authenticate(memoryCredential):undefined;
+        if(memoryOwner&&!owner.memory_profile){owner={...owner,memory_profile:memoryOwner.id};await writeFile(join(dir,'owner.json'),JSON.stringify(owner)+'\n');}
+        const longTermMemory=memoryOwner&&owner.memory_profile===memoryOwner.id?options.memoryFactory?.(memoryOwner):undefined;
+        session=await options.factory(dir,{longTermMemory});
+        if(action==='import'){if(!longTermMemory)throw new RuntimeFailure('FORBIDDEN','No matching memory profile');const view=await session.view();json(res,200,await longTermMemory.importSession(match[1],view.memory));return;}
         if(action==="ask")liveSessions.set(match[1],session);
         if(action==="ask"&&match[2]==="question/stream"){
           res.writeHead(200,{"Content-Type":"application/x-ndjson; charset=utf-8","X-Accel-Buffering":"no"});res.setTimeout(0);
           const send=(value:unknown)=>{if(!res.destroyed&&!res.writableEnded)res.write(JSON.stringify(value)+"\n");};
-          send({type:"ready"});heartbeat=setInterval(()=>send({type:"heartbeat"}),10000);heartbeat.unref();
-          const value=await session.ask(input.question as string,event=>send({type:"activity",event}),update=>send({type:'answer',update}));
+          send({type:"ready",request_id:run!.id});heartbeat=setInterval(()=>send({type:"heartbeat"}),10000);heartbeat.unref();
+          const value=await session.ask(input.question as string,event=>send({type:"activity",event}),update=>send({type:'answer',update}),{request_id:run!.id,signal:run!.controller.signal,onTasks:progress=>send({type:'task_progress',progress})});
           send({type:"result",view:value});res.end();return;
         }
-        const value=action==="ask"?await session.ask(input.question as string):action==="settings"?await session.configure(input.scope as string[],input.compact as boolean):await session.view();
+        const value=action==="ask"?await session.ask(input.question as string,undefined,undefined,{request_id:run!.id,signal:run!.controller.signal}):action==="settings"?await session.configure(input.scope as string[],input.compact as boolean):await session.view();
         json(res,200,value);
-      }finally{if(heartbeat)clearInterval(heartbeat);liveSessions.delete(match[1]);try{await session?.close();}finally{processing=false;}}
+      }finally{if(heartbeat)clearInterval(heartbeat);liveSessions.delete(match[1]);if(run&&activeRuns.get(match[1])===run){activeRuns.delete(match[1]);finishedRuns.set(match[1]+':'+run.id,Date.now()+300000);pruneRuns();}try{await session?.close();}finally{processing=false;}}
     }catch(e){
       const code=e instanceof RuntimeFailure?e.code:(e as NodeJS.ErrnoException).code==="ENOENT"?"NOT_FOUND":"RUNTIME_ERROR";
       const f=failure(code);if(!res.headersSent)json(res,f.status,{error:f.message,code});else if(!res.destroyed)res.end(JSON.stringify({type:"error",error:f.message,code})+"\n");
@@ -242,7 +290,9 @@ export async function startWeb(args:string[],root=PROJECT_ROOT){
       worker=await createWorker(assets,config);
       const sourceRows=(await readFile(join(root,config.retrieval.index_dir,"chunks.jsonl"),"utf8")).split(/\r?\n/u).filter(Boolean).map(s=>JSON.parse(s) as Chunk);
       const sources=new Map(sourceRows.map(c=>[c.chunk_id,c]));
-      options.factory=directory=>PaperWebSession.open({directory,assets,config,worker:worker!,sources,key});
+      const scientificSources=await ScientificReading.open(root,assets.indexVersion,new Set(assets.publicPapers.map(p=>p.paper_id)),worker);
+      options.factory=(directory,context)=>PaperWebSession.open({directory,assets,config,worker:worker!,sources,key,scientificSources,longTermMemory:context?.longTermMemory});
+      options.memoryFactory=owner=>new LongTermMemory(worker!,'web:'+owner.id,assets.publicPapers,[key,options.accessToken??''].filter(Boolean),owner.enabled);
       options.papers=assets.publicPapers;options.modelLabel=config.model.model_id;options.context=new ContextTracker().view(config.model.context_window,config.session.compaction==='native');
       const translator=new SourceTranslation(root,config,key);options.translate=(sources,directory,turnId)=>translator.translate(sources,directory,turnId);
     }

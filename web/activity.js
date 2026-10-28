@@ -184,14 +184,14 @@ export class ExecutionPlayback {
 }
 
 /** POST streams retain ownership headers; transport loss never retries an inference. */
-export async function readQuestionStream(response,onActivity,onAnswer=()=>{}){
+export async function readQuestionStream(response,onActivity,onAnswer=()=>{},onTasks=()=>{}){
   if(!response.ok){const error=await response.json();throw new Error(error.error||'问答服务未能连接。');}
   if(!response.body)throw new Error('浏览器未能读取执行过程，请刷新后恢复会话。');
   const reader=response.body.getReader(),decoder=new TextDecoder();let pending='',result;
   try{
     while(true){const {value,done}=await reader.read();pending+=decoder.decode(value,{stream:!done});
       let newline;while((newline=pending.indexOf('\n'))>=0){const line=pending.slice(0,newline);pending=pending.slice(newline+1);if(!line.trim())continue;
-        const item=JSON.parse(line);if(item.type==='activity')onActivity(item.event);else if(item.type==='answer')onAnswer(item.update);else if(item.type==='result')result=item.view;else if(item.type==='error')throw new Error(item.error);
+        const item=JSON.parse(line);if(item.type==='activity')onActivity(item.event);else if(item.type==='answer')onAnswer(item.update);else if(item.type==='task_progress')onTasks(item.progress);else if(item.type==='result')result=item.view;else if(item.type==='error')throw new Error(item.error);
       }
       if(pending.length>2000000)throw new Error('问答响应过长，请刷新后查看会话。');if(done)break;
     }

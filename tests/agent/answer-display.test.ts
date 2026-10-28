@@ -23,7 +23,23 @@ test('a credential split across answer chunks is withheld and redacted before tr
   const stream=new AnswerStreamer(update=>updates.push(update.text),[secret],()=>now+=100);
   for(let i=1;i<=secret.length;i++)stream.update('request','正文 '+secret.slice(0,i),[]);
   assert.ok(updates.every(text=>!text.includes(secret)&&!text.includes('fixture-stream-')));assert.match(updates.at(-1)!,/REDACTED/u);
-  stream.update('correction','修正后的正文',[],true);assert.equal(updates.at(-1),'修正后的正文');
+  const before=updates.at(-1);stream.update('correction','修正后的正文',[],true);assert.equal(updates.at(-1),before);
+  stream.commit('correction','修正后的正文',[]);assert.equal(updates.at(-1),'修正后的正文');
+});
+
+test('later revisions retain the existing stream and commit the chosen answer once',()=>{
+  const updates:Array<{request_id:string;text:string;phase?:string}>=[],stream=new AnswerStreamer(update=>updates.push(update),[],()=>1000);
+  stream.update('first','完整的第一版回答',[],true);
+  for(const prefix of ['修','修订','修订后的回答'])stream.update('repair',prefix,[],true);
+  assert.deepEqual(updates.map(update=>update.text),['完整的第一版回答','完整的第一版回答']);assert.equal(updates.at(-1)?.phase,'reviewing');
+  stream.commit('repair','修订后的回答',[]);assert.equal(updates.at(-1)?.phase,'final');assert.equal(updates.at(-1)?.text,'修订后的回答');
+  stream.reset();stream.update('next-turn','下一轮从这里开始',[],true);assert.equal(updates.at(-1)?.phase,'writing');assert.equal(updates.at(-1)?.text,'下一轮从这里开始');
+});
+
+test('mixed Markdown streaming never emits a trailing runtime-control object',()=>{
+  const prefix='## 论文方法\n\n这是回答。\n\n',json='```json\n{"status":"complete","answer_kind":"comparison","needs_sources":true}\n```';
+  for(let i=1;i<=json.length;i++){const text=visibleAnswerPrefix(prefix+json.slice(0,i));assert.ok(!text.includes('"status"'));assert.ok(!text.includes('"needs_sources"'));}
+  assert.equal(visibleAnswerPrefix(prefix+json,[],true),prefix.trimEnd());
 });
 test('headers, nested lists, tables, code and all common math delimiters produce structured markup',()=>{
   const html=markdownToHtml('# 标题\n\n## 方法\n\n- 第一项\n  - 第二层\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n```ts\nconst value = "$literal$";\n```\n\n内联 $x^2$，以及 \\(\\alpha+1\\)。\n\n$$\\frac{a}{b}$$\n\n\\[E=mc^2\\]');
@@ -41,6 +57,11 @@ test('answer transport delivers text frames before the final result across split
   const bytes=encoder.encode(frames.map(frame=>JSON.stringify(frame)+'\n').join(''));
   const body=new ReadableStream({start(controller){for(let i=0;i<bytes.length;i+=7)controller.enqueue(bytes.slice(i,i+7));controller.close();}});
   const result=await readQuestionStream(new Response(body),()=>{},update=>received.push(update.text));assert.deepEqual(received,['第一段','第一段，第二段']);assert.deepEqual(result.turns,[]);
+});
+test('task progress is delivered independently from model text and survives UTF-8 frame splitting',async()=>{
+  const events:unknown[]=[],progress={version:1,phase:'running',items:[{id:'n2',label:'比较实验',state:'running',source_ids:[],note:''}]},data=new TextEncoder().encode(JSON.stringify({type:'task_progress',progress})+'\n'+JSON.stringify({type:'result',view:{turns:[]}})+'\n');
+  const body=new ReadableStream({start(controller){for(let i=0;i<data.length;i+=3)controller.enqueue(data.slice(i,i+3));controller.close();}});
+  await readQuestionStream(new Response(body),()=>{},()=>{},value=>events.push(value));assert.deepEqual(events,[progress]);
 });
 test('Harness streams only visible final-answer text while retaining its normal source validation',async()=>{
   const updates:string[]=[],controls={arm:'C',reflect:false,compaction:'off',reliability:'candidate',implementation_id:'1'.repeat(64)} as const;

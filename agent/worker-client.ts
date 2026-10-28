@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
-import { RuntimeFailure, object, type RetrieveParams, type SearchParams, type ToolName, type WorkerTransport } from "./contracts.ts";
+import { RuntimeFailure, object, type RetrieveParams, type SearchParams, type ToolName, type WorkerTransport,type ScientificParams } from "./contracts.ts";
 
 interface Pending {
   resolve(value: unknown): void;
@@ -20,6 +20,8 @@ export interface WorkerOptions {
   device?: "cuda" | "cpu";
   expectReady?: boolean;
   readyTimeoutMs?: number;
+  scientificCacheDir?:string;
+  memoryDir?:string;
 }
 export interface WorkerReady { version: 1; type: "ready"; backend: string; index_version: string }
 
@@ -45,7 +47,7 @@ export class PythonWorkerClient implements WorkerTransport {
   private readyReceived = false;
 
   constructor(options: WorkerOptions) {
-    for (const path of [options.pythonPath, options.workerPath, options.corpusDir, options.indexDir, options.modelsDir].filter((path): path is string => path !== undefined)) {
+    for (const path of [options.pythonPath, options.workerPath, options.corpusDir, options.indexDir, options.modelsDir,options.scientificCacheDir,options.memoryDir].filter((path): path is string => path !== undefined)) {
       if (!isAbsolute(path)) throw new RuntimeFailure("INVALID_CONFIG", "Worker paths must be absolute");
     }
     this.expectReady = options.expectReady ?? false;
@@ -53,7 +55,7 @@ export class PythonWorkerClient implements WorkerTransport {
     this.maxFrameBytes = options.maxFrameBytes ?? 1_048_576;
     const args = [options.workerPath, "--corpus-dir", options.corpusDir,
       ...(options.profile ? ["--profile", options.profile] : []), ...(options.indexDir ? ["--index-dir", options.indexDir] : []),
-      ...(options.modelsDir ? ["--models-dir", options.modelsDir] : []), ...(options.device ? ["--device", options.device] : [])];
+      ...(options.modelsDir ? ["--models-dir", options.modelsDir] : []), ...(options.device ? ["--device", options.device] : []),...(options.scientificCacheDir?["--scientific-cache-dir",options.scientificCacheDir]:[]),...(options.memoryDir?['--memory-dir',options.memoryDir]:[])];
     this.readiness = this.expectReady ? new Promise<WorkerReady>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.fail(new RuntimeFailure("WORKER_READY_TIMEOUT", "Corpus worker did not become ready in time")); this.process.kill();
@@ -141,6 +143,11 @@ export class PythonWorkerClient implements WorkerTransport {
     if (method !== "search_papers" && method !== "retrieve_chunks") {
       return Promise.reject(new RuntimeFailure("METHOD_NOT_ALLOWED", "Worker method is not allowed"));
     }
+    return this.send(method,params,signal);
+  }
+  readScientificSources(params:ScientificParams,signal?:AbortSignal):Promise<unknown>{return this.send('read_scientific_sources',params,signal);}
+  memoryOperation(params:Record<string,unknown>,signal?:AbortSignal):Promise<unknown>{return this.send('memory_operation',params,signal);}
+  private async send(method:string,params:object,signal?:AbortSignal):Promise<unknown>{
     if (this.failure) return Promise.reject(this.failure);
     if (this.expectReady) await this.readiness;
     if (signal?.aborted) return Promise.reject(new RuntimeFailure("CANCELLED", "Corpus request cancelled"));

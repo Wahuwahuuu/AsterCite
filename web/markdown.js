@@ -13,7 +13,8 @@ function mathToken(source,block){
     }
   }
 }
-function formula(token){return katex.renderToString(token.text,{displayMode:token.display,throwOnError:false,trust:false,strict:'ignore',maxExpand:1000,maxSize:20,output:'htmlAndMathml'});}
+const formulaCache=new Map();
+function formula(token){const key=JSON.stringify([token.display,token.text]);if(formulaCache.has(key))return formulaCache.get(key);const html=katex.renderToString(token.text,{displayMode:token.display,throwOnError:false,trust:false,strict:'ignore',maxExpand:1000,maxSize:20,output:'htmlAndMathml'});if(formulaCache.size>=256)formulaCache.delete(formulaCache.keys().next().value);formulaCache.set(key,html);return html;}
 /** Parse Markdown and scientific notation; citation numbers come only from known sources. */
 export function markdownToHtml(text,{sources=[],interactive=true}={}){
   const parser=new Marked({gfm:true,breaks:false});

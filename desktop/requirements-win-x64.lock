@@ -736,3 +736,5 @@ typing-extensions==4.16.0 \
 urllib3==2.8.0 \
     --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 \
     --hash=sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63
+qdrant-edge-py==0.9.0 \
+    --hash=sha256:78bafbe31a7f24a6e8428626b37408b4bbdf4c8a1e1044b102ace6a14d6b4d8c

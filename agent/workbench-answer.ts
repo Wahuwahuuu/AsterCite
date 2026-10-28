@@ -4,6 +4,8 @@ import type {PaperCoverage} from './selected-scope.ts';
 import {citationIds} from './p2-r2.ts';
 import {decodeCandidateJSON} from './main-reliability-v2.ts';
 import {inspectCitationAttribution,type ClaimAttribution} from './citation-attribution.ts';
+import {executionFromOutput,type TurnExecution} from './turn-execution.ts';
+import {splitAnswerControl,displayPaperTitles} from '../web/answer-format.js';
 
 export const WORKBENCH_ANSWER_POLICY='workbench-v1' as const;
 const OUTPUT_LIMIT=256_000;
@@ -11,24 +13,20 @@ export const WORKBENCH_ANSWER_INSTRUCTION=`Answer the complete original user que
 For research findings, use only the actual visible paper excerpts and copy their exact [cite:chunk_id] markers. Never invent a source, equate retrieval with correctness, or attach an unrelated excerpt to a claim. Distinguish supported findings, interpretation, and evidence gaps. If only part can be answered, answer that part and state what remains unknown. No need to turn every gap into a refusal.
 Place citations next to the factual statement or within its paragraph, especially experimental numbers. A citation to a methods paragraph cannot support an accuracy found only in a catalog preview. For original abstracts, read retrieve_chunks section=abstract before explaining results. Explicitly distinguish paper-reported numbers from your own calculations and examples.
 Respond normally to conversational questions, workbench usage and user preferences without requiring paper citations. Treat the QuestionFrame and optional evidence check as fallible hints; preserve the original question and real conversation. Ask clarification only when an unresolved ambiguity actually prevents a useful answer.
+Refer to papers by their actual supplied titles, with a clear short title after the first full mention. Titles are the primary labels in tables, headings and prose. Paper IDs are internal tool/source identifiers; include them only as optional disambiguation after a title. Never append a separate control JSON block after Markdown. Put execution metadata inside the optional response envelope, outside the answer string.
+When the question needs a table or equation, read content_type=table/equation with retrieve_chunks. Preserve source table headers, units, values and LaTeX symbols in the answer; use Markdown tables and mathematical delimiters. Read further groups when selection.has_more is true, and state a source gap when the original structure is unavailable. Never reconstruct missing scientific numbers or formulas from a title or prose guess.
 Do not reveal hidden reasoning. Do not output auxiliary quote annotations unless useful; a paraphrase does not require exact_quotes.`;
 
 export interface WorkbenchContext {
   evidence:ReadonlyMap<string,Chunk>;expectedKind?:AnswerKind;allowAnswer:boolean;
   requiredPapers?:readonly string[];papers?:readonly Paper[];
-  truncated?:boolean;
+  truncated?:boolean;execution?:TurnExecution;
 }
 export interface WorkbenchAnswer {
   value:FinalAnswer;original:string;notices:string[];adaptations:string[];
   citationIssues:string[];needsCitationRepair:boolean;visibleCitationCount:number;
   attribution:ClaimAttribution[];
-  pendingAction:boolean;
-}
-
-/** An explicit unexecuted action at the end is a continuation, not a finished explanation. */
-export function pendingWorkbenchAction(text:string):boolean{
-  return /(?:^|[。！？.!?\n])\s*(?:(?:让|容)我(?:再|继续|先|来)?|我(?:会|将|需要|先|再|接下来(?:会)?))[^。！？.!?\n]{0,100}(?:检索|搜索|查阅|查询|查找|核实|读取|阅读)[^。！？.!?\n]{0,100}[：:。.!！\s]*$/u.test(text)
-    ||/(?:^|[.!?\n])\s*(?:let me|i (?:will|shall|need to|am going to)|i['’]ll)\s+[^.!?\n]{0,80}(?:look up|search|retrieve|read|check|inspect)[^.!?\n]{0,100}[:.!\s]*$/iu.test(text);
+  execution?:TurnExecution;
 }
 
 export function workbenchSystemPrompt(prompt:string):string{
@@ -57,6 +55,8 @@ function completeAnswerString(source:string):string|undefined{
 
 function bodyFrom(output:string,adaptations:string[]):{raw:Record<string,unknown>;body:string}|null{
   if(!output.trim())return null;
+  const parts=splitAnswerControl(output);
+  if(parts.body!==output&&parts.control){adaptations.push('answer_control_separated');return {raw:parts.control,body:parts.body};}
   try{
     let value:unknown=JSON.parse(decodeCandidateJSON(output,kind=>adaptations.push(kind),OUTPUT_LIMIT));
     if(record(value)){
@@ -80,21 +80,24 @@ function bodyFrom(output:string,adaptations:string[]):{raw:Record<string,unknown
 
 export function workbenchCoverageInstruction(ids:readonly string[],papers:readonly Paper[]):string{
   if(!ids.length)return '';
-  return `Address each selected paper separately: ${JSON.stringify(ids.map(id=>({paper_id:id,title:papers.find(paper=>paper.paper_id===id)?.title??id})))}. Prefer a heading with paper ID/title, then explain its actual findings or the bounded evidence gap. Use each paper's own visible citations. Do not force a Twitter-text question onto an unrelated speech/dialogue paper. If time/tool allowance prevents covering a paper, say so. paper_coverage metadata is optional; clear readable coverage in the answer is the priority.`;
+  return `Address each selected paper separately: ${JSON.stringify(ids.map(id=>({paper_id:id,title:papers.find(paper=>paper.paper_id===id)?.title??id})))}. Use its actual title as the heading and table label; optional paper IDs follow titles, never replace them. Then explain actual findings or the bounded evidence gap. Use each paper's own visible citations. Do not force a Twitter-text question onto an unrelated speech/dialogue paper. If time/tool allowance prevents covering a paper, say so. paper_coverage metadata is optional; clear readable coverage in the answer is the priority.`;
 }
 
 /** Presentation normalization is separate from the strict research answer contract. */
 export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):WorkbenchAnswer|null{
   const adaptations:string[]=[],notices:string[]=[],citationIssues:string[]=[];
   const parsed=bodyFrom(output,adaptations);if(!parsed||!parsed.body.trim())return null;
-  const raw=parsed.raw;let body=parsed.body,limited=false;
+  const raw=parsed.raw;let body=displayPaperTitles(parsed.body,context.papers),limited=false;
   if(Array.from(body).length>OUTPUT_LIMIT){body=Array.from(body).slice(0,OUTPUT_LIMIT).join('');limited=true;notices.push('内容较长，当前保留已生成的前半部分');adaptations.push('visible_answer_size_bounded');}
   if(context.truncated){limited=true;notices.push('回答达到本次输出长度上限，已保留生成内容，可继续追问');adaptations.push('truncated_answer_preserved');}
   const declared=raw.answer_kind;
   const kind:AnswerKind=context.expectedKind??(['paper_fact','catalog','session_control'].includes(String(declared))?declared as AnswerKind:'paper_fact');
   if(declared!==undefined&&declared!==kind)adaptations.push('answer_kind_reconciled_with_question');
   let status:BusinessStatus=['answer','partial','refusal','clarification'].includes(String(raw.status))?raw.status as BusinessStatus:'answer';
-  if(Object.keys(raw).some(key=>!['status','answer_kind','answer','final_answer','exact_quotes','paper_coverage'].includes(key)))adaptations.push('auxiliary_answer_fields_ignored');
+  let execution=context.execution??executionFromOutput(output);
+  if(execution?.state==='clarification')status='clarification';
+  else if(execution?.state==='working'||execution?.state==='partial')status='partial';
+  if(Object.keys(raw).some(key=>!['status','answer_kind','answer','final_answer','exact_quotes','paper_coverage','execution'].includes(key)))adaptations.push('auxiliary_answer_fields_ignored');
   // Exact identity only. Numeric reference labels are never guessed into source IDs.
   body=body.replace(/\[\s*(?:cite\s*:\s*)?([^\]\n]+?)\s*\]|【\s*cite\s*:\s*([^】\n]+?)\s*】/giu,(marker:string,ordinary:string|undefined,wide:string|undefined)=>{
     const id=(wide??ordinary??'').trim();
@@ -131,19 +134,21 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
     const gaps=coverage.filter(paper=>paper.status==='insufficient');
     if(gaps.length){if(status==='answer')status='partial';notices.push('以下论文尚未充分覆盖：'+gaps.map(paper=>paper.paper_id).join('、'));}
   }
-  const pendingAction=kind==='paper_fact'&&pendingWorkbenchAction(body);
-  if(pendingAction){status='partial';notices.push('后续检索尚未完成，以上仅为当前已经找到的内容');adaptations.push('unfinished_tool_action');}
+  if(execution?.state==='working'||execution?.state==='partial'&&execution.stop_reason){status='partial';notices.push('本轮任务尚未全部完成，已保留当前内容'+(execution.remaining_needs.length?'；待完成：'+execution.remaining_needs.join('；'):''));adaptations.push('execution_incomplete');}
+  else if(execution?.state==='partial')status='partial';
+  else if(execution?.state==='clarification')status='clarification';
   if(positive&&(notices.length||limited))status='partial';
+  if(status==='partial'&&execution?.state==='complete')execution={...execution,state:'partial'};
   const distinctNotices=[...new Set(notices)];
-  const answer=body+(distinctNotices.length?'\n\n'+(pendingAction?'本轮说明':'原文关联说明')+'：'+distinctNotices.join('；')+'。':'');
+  const answer=body+(distinctNotices.length?'\n\n'+(execution?.state==='working'||execution?.stop_reason?'本轮说明':'原文关联说明')+'：'+distinctNotices.join('；')+'。':'');
   return {value:{status,answer_kind:kind,answer,exact_quotes:quotes,...(coverage?{paper_coverage:coverage}:{})},original:output,
     notices:distinctNotices,adaptations:[...new Set(adaptations)],citationIssues:[...new Set(citationIssues)],
-    needsCitationRepair:positive&&citationIssues.length>0&&context.evidence.size>0,visibleCitationCount:ids.length,attribution:attribution.checks,pendingAction};
+    needsCitationRepair:positive&&citationIssues.length>0&&context.evidence.size>0,visibleCitationCount:ids.length,attribution:attribution.checks,execution};
 }
 
 /** A correction must improve source linkage or explicitly withdraw unsupported findings. */
 export function preferWorkbenchAnswer(previous:WorkbenchAnswer|undefined,current:WorkbenchAnswer):WorkbenchAnswer{
-  if(previous&&previous.pendingAction!==current.pendingAction)return previous.pendingAction?current:previous;
+  if(previous&&(previous.execution?.state==='working')!==(current.execution?.state==='working'))return previous.execution?.state==='working'?current:previous;
   if(!previous||!current.citationIssues.length||['refusal','clarification'].includes(current.value.status))return current;
   if(current.visibleCitationCount!==previous.visibleCitationCount)return current.visibleCitationCount>previous.visibleCitationCount?current:previous;
   if(current.citationIssues.length!==previous.citationIssues.length)return current.citationIssues.length<previous.citationIssues.length?current:previous;

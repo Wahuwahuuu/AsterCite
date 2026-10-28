@@ -3,15 +3,22 @@ import {ActivityPanel,readQuestionStream} from './activity.js';
 import {PaperReader} from './paper-reader.js';
 import {TraceInspector} from './trace-inspector.js';
 import {SessionPanel} from './session-panel.js';
+import {LongMemoryPanel} from './long-memory.js';
 import {renderMarkdown} from './markdown.js';
 import {AnswerPreview} from './answer-preview.js';
+import {displayPaperTitles,splitAnswerControl} from './answer-format.js';
 import {ReaderFollow} from './reader-follow.js';
 import {normalizeConversations,listConversations,renameConversation,touchConversation} from './conversations.js';
+import {TaskProgressPanel} from './task-progress.js';
 
 const $=id=>document.getElementById(id);
 const make=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-const state={mode:'demo',papers:[],sample:null,turns:[],scope:[],pending_compaction:false,memory:null,context:null,initialContext:null,budget:null,busy:false,active:null,accessToken:'',demoIndex:-1,sessions:[],showArchived:false,sourceTurn:-1};
+const state={mode:'demo',papers:[],sample:null,turns:[],scope:[],pending_compaction:false,memory:null,context:null,initialContext:null,budget:null,busy:false,active:null,accessToken:'',demoIndex:-1,sessions:[],showArchived:false,sourceTurn:-1,memorySupported:false,memoryCredential:'',longTermMemory:null};
+let currentRequest=null;
+const tasksPanel=new TaskProgressPanel({dialog:$('task-dialog'),content:$('task-content'),button:$('current-tasks'),papers:()=>state.papers,onPaper:id=>{void openPdf(id);}});
+function requestControls(){const active=Boolean(currentRequest);$('stop-generation').hidden=!active;$('stop-generation').disabled=Boolean(currentRequest?.stopping);$('stop-generation').textContent=currentRequest?.stopping?'正在停止…':'■ 停止生成';$('send').hidden=active;}
 const STORAGE='astercite.web.sessions.v1';
+const MEMORY_STORAGE='astercite.web.memory-owner.v1';try{state.memoryCredential=localStorage.getItem(MEMORY_STORAGE)||'';}catch{}
 const sessionMenu=$('session-menu');let menuTarget=null,menuAnchor=null,renameTarget=null;
 const inspector=new TraceInspector();
 function inspectTurn(turn,live=false){
@@ -27,7 +34,11 @@ const sessionPanel=new SessionPanel({onSchedule:compact=>settings(state.scope,co
   for(const name of ['memory-dialog','compression-dialog'])if($(name).open)$(name).close();
   const turn=[...document.querySelectorAll('[data-turn-id]')].find(item=>item.dataset.turnId===id);if(turn){turn.scrollIntoView({behavior:'smooth',block:'start'});turn.classList.add('memory-highlight');setTimeout(()=>turn.classList.remove('memory-highlight'),2000);}else notice('这条摘记来自更早的对话，当前记录中未找到对应回答。');
 }});
-function renderSessionPanels(){sessionPanel.update({mode:state.mode,papers:state.papers,turns:state.turns,memory:state.memory,context:state.context,pending:state.pending_compaction,busy:state.busy});}
+const longMemoryPanel=new LongMemoryPanel({api,ensureProfile:ensureMemoryProfile,isBusy:()=>state.busy,onPaper:id=>openPdf(id),onSource:async(id,turn)=>{
+  const owner=state.sessions.find(item=>item.id===id);if(!owner){notice('来源对话不在当前浏览器的列表中，摘记仍可在长期记忆中查看。');return;}if(state.busy)return;
+  try{busy(true);const view=await api('/api/sessions/'+id,undefined,{session:owner});state.active=owner;applyView(view);$('memory-dialog').close();const target=[...document.querySelectorAll('[data-turn-id]')].find(item=>item.dataset.turnId===turn);target?.scrollIntoView({behavior:'smooth',block:'start'});}catch(error){notice(error.message,true);}finally{busy(false);}
+}});
+function renderSessionPanels(){sessionPanel.update({mode:state.mode,papers:state.papers,turns:state.turns,memory:state.memory,context:state.context,pending:state.pending_compaction,busy:state.busy});longMemoryPanel.update({mode:state.mode,supported:state.memorySupported,papers:state.papers,current:state.longTermMemory,session:state.active});}
 const reader=new PaperReader({pages:$('pdf-pages'),status:$('pdf-status'),page:$('pdf-page'),previous:$('pdf-prev'),next:$('pdf-next'),zoom:$('pdf-zoom'),original:$('pdf-original'),retry:$('pdf-retry'),container:$('pdf-viewport'),highlightBar:$('pdf-highlight-bar'),highlightStatus:$('pdf-highlight-status'),highlightClear:$('pdf-highlight-clear')});
 let readingPaper=null,showcase=[];
 const readerFollow=new ReaderFollow({open:id=>openPdf(id,{automatic:true}),current:()=>readingPaper?.paper_id??null});
@@ -52,6 +63,7 @@ async function api(path,body,{method=body===undefined?'GET':'POST',session=state
   const headers={'X-AsterCite-Request':'1'};
   if(body!==undefined)headers['Content-Type']='application/json';
   if(session)headers['X-AsterCite-Session']=session.token;
+  if(state.memoryCredential)headers['X-AsterCite-Memory']=state.memoryCredential;
   if(state.accessToken)headers.Authorization='Bearer '+state.accessToken;
   const response=await fetch(path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
   const value=await response.json();
@@ -65,20 +77,33 @@ function busy(value){
   $('compact').disabled=value||state.mode!=='live';
   document.querySelectorAll('.paper-scope,.session-item,.session-more,.example-card').forEach(n=>n.disabled=value);
   $('send-label').textContent=value?'处理中':state.mode==='demo'?'播放下一问':'发送问题';
+  requestControls();
   renderSessionPanels();
   if(value)$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
 }
-function applyView(view,{follow=true}={}){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.context=view.context??state.initialContext;state.budget=view.budget;render();const last=state.turns.at(-1);if(last)inspector.updateRun(last);activity.reset();if(follow)readerFollow.finish(view);renderReaderFollow();}
+function applyView(view,{follow=true}={}){state.turns=view.turns;state.scope=view.scope;state.pending_compaction=view.pending_compaction;state.memory=view.memory;state.longTermMemory=view.long_term_memory??null;state.context=view.context??state.initialContext;state.budget=view.budget;render();const last=state.turns.at(-1);if(last)inspector.updateRun(last);activity.reset();if(follow)readerFollow.finish(view);renderReaderFollow();}
 function resetConversation(){
+  tasksPanel.begin();if($('task-dialog').open)$('task-dialog').close();
   state.active=null;state.turns=[];state.scope=[];state.memory=null;state.context=state.initialContext;state.budget=null;state.pending_compaction=false;state.demoIndex=-1;state.sourceTurn=-1;state.showArchived=false;closeSessionMenu();
+  state.longTermMemory=null;longMemoryPanel.override=null;
   inspector.reset();translationCache.clear();reader.clearHighlight();readerFollow.beginTurn();renderReaderFollow();
   for(const id of ['memory-dialog','compression-dialog'])if($(id).open)$(id).close();
   render();activity.reset({replay:state.mode==='demo'});if(state.mode==='live'){$('question').value='';$('question').focus();}
 }
 async function ensureSession(){
   if(state.active)return;
+  await ensureMemoryProfile();
   const value=await api('/api/sessions',{}),now=Date.now();state.active=normalizeConversations([{...value,label:'新对话',created_at:now,updated_at:now}])[0];state.showArchived=false;
   state.sessions.unshift(state.active);persist();renderSessions();
+}
+let memoryProfilePending;
+async function ensureMemoryProfile(){
+  if(state.mode!=='live'||!state.memorySupported)return;
+  if(memoryProfilePending)return memoryProfilePending;
+  memoryProfilePending=(async()=>{
+    if(state.memoryCredential){try{await api('/api/memory/profile');return;}catch(error){if(error.status!==403)throw error;state.memoryCredential='';}}
+    const profile=await api('/api/memory/profiles',{});state.memoryCredential=profile.credential;try{localStorage.setItem(MEMORY_STORAGE,state.memoryCredential);}catch{notice('浏览器未允许保存记忆身份，关闭页面后可能无法恢复长期记忆。');}
+  })();try{await memoryProfilePending;}finally{memoryProfilePending=null;}
 }
 function renderPapers(){
   const list=$('paper-list');list.replaceChildren();const term=$('paper-search').value.toLowerCase();
@@ -168,7 +193,9 @@ function inlineText(target,text,sources){
 function sourceContent(blocks){
   const content=make('div','source-content');
   for(const block of blocks){
-    if(block.kind==='table'){
+    if(block.kind==='markdown'){
+      const section=make('div','source-scientific');renderMarkdown(section,block.text);content.append(section);
+    }else if(block.kind==='table'){
       const table=make('table','source-table');table.append(make('caption',null,block.caption));
       const head=make('thead'),header=make('tr');
       for(const label of block.headers){const th=make('th',null,label);th.scope='col';header.append(th);}head.append(header);table.append(head);
@@ -181,43 +208,48 @@ function sourceContent(blocks){
 }
 let sourceVersion=0,translationQueue=[],translating=false;
 const translationCache=new Map();
-const sourceObserver=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){const item=entry.target.translationItem;if(item&&!item.queued){item.queued=true;translationQueue.push(item);}sourceObserver.unobserve(entry.target);}void flushTranslations();},{root:$('sources'),rootMargin:'120px'});
 function translationContent(target,text){
   const blocks=parseEvidenceText(text),preview=evidencePreview(blocks);target.replaceChildren();target.append(sourceContent(preview.blocks));
   if(preview.hasMore){const details=make('details','source-details'),summary=make('summary',null,'展开完整译文');details.append(summary,sourceContent(blocks));target.append(details);}
 }
 function translatedView(target,text,request){translationContent(target,text);if(request){const button=make('button','translation-inspect','查看翻译请求');button.addEventListener('click',()=>inspector.show(request));target.append(button);}}
 function queueTranslation(source,card,turn){
-  const view=make('div','translation-view'),heading=make('div','translation-heading','中文译文');view.append(heading);
-  const content=make('div','translation-content'),status=make('p','translation-status','等待翻译…');content.append(status);view.append(content);card.append(view);
-  const original=make('details','source-details source-original');original.append(make('summary',null,'英文原文'),sourceContent(parseEvidenceText(source.text)));card.append(original);
-  if(state.mode!=='live'||!turn?.turn_id||!state.active){status.textContent='此历史片段没有对应的译文记录，可展开英文原文。';return;}
-  const key=turn.turn_id+':'+source.chunk_id;
-  if(translationCache.has(key)){const value=translationCache.get(key);translatedView(content,value.text,value.request);return;}
-  const item={source,turn,owner:{...state.active},accessToken:state.accessToken,content,status,key,version:sourceVersion,queued:false};card.translationItem=item;sourceObserver.observe(card);
+  const original=make('div','source-original');original.append(make('div','translation-heading','英文原文'));
+  const blocks=parseEvidenceText(source.text),preview=evidencePreview(blocks);original.append(sourceContent(preview.blocks));
+  if(preview.hasMore){const details=make('details','source-details');details.append(make('summary',null,'展开完整原文'),sourceContent(blocks));original.append(details);}card.append(original);
+  const button=make('button','translation-toggle','翻译为中文');button.type='button';card.append(button);
+  const view=make('div','translation-view');view.hidden=true;view.append(make('div','translation-heading','中文译文'));
+  const content=make('div','translation-content'),status=make('p','translation-status');content.append(status);view.append(content);card.append(view);
+  if(state.mode!=='live'||!turn?.turn_id||!state.active){button.disabled=true;button.title=state.mode==='live'?'本轮保存后可翻译':'完整问答模式下可请求中文翻译';return;}
+  const key=turn.turn_id+':'+source.chunk_id,item={source,turn,owner:{...state.active},accessToken:state.accessToken,content,status,key,version:sourceVersion,queued:false,button,view};
+  button.addEventListener('click',()=>{
+    if(translationCache.has(key)){view.hidden=!view.hidden;if(!view.hidden){const value=translationCache.get(key);translatedView(content,value.text,value.request);}button.textContent=view.hidden?'显示中文译文':'收起中文译文';return;}
+    if(item.queued)return;item.queued=true;button.disabled=true;button.textContent='翻译中…';view.hidden=false;translationQueue.push(item);void flushTranslations();
+  });
 }
 async function flushTranslations(){
   if(translating)return;translating=true;
   try{while(translationQueue.length){
     const first=translationQueue.shift();if(first.version!==sourceVersion)continue;
     const batch=[first];for(let i=0;i<translationQueue.length&&batch.length<2;){const next=translationQueue[i];if(next.version===sourceVersion&&next.turn.turn_id===first.turn.turn_id&&next.owner.id===first.owner.id){batch.push(next);translationQueue.splice(i,1);}else i++;}
-    for(const item of batch)item.status.textContent='正在翻译原文…';
+    for(const item of batch){item.status.textContent='正在翻译原文…';item.content.replaceChildren(item.status);}
     try{
       const headers={'Content-Type':'application/json','X-AsterCite-Request':'1','X-AsterCite-Session':first.owner.token};if(first.accessToken)headers.Authorization='Bearer '+first.accessToken;
       const response=await fetch(`/api/sessions/${first.owner.id}/translate`,{method:'POST',headers,body:JSON.stringify({turn_id:first.turn.turn_id,chunk_ids:batch.map(item=>item.source.chunk_id)})}),value=await response.json();
       if(!response.ok)throw new Error(value.error||'译文暂时未能生成。');
-      for(const item of batch){const translated=value.items.find(row=>row.chunk_id===item.source.chunk_id);if(!translated)throw new Error('片段译文不完整。');translationCache.set(item.key,{text:translated.text,request:value.request});if(item.version===sourceVersion)translatedView(item.content,translated.text,value.request);}
-    }catch(error){for(const item of batch){if(item.version!==sourceVersion)continue;item.content.replaceChildren(make('p','translation-status',error.message));const retry=make('button','translation-retry','重试翻译');retry.addEventListener('click',()=>{item.queued=true;translationQueue.push(item);void flushTranslations();});item.content.append(retry);}}
+      for(const item of batch){const translated=value.items.find(row=>row.chunk_id===item.source.chunk_id);if(!translated)throw new Error('片段译文不完整。');translationCache.set(item.key,{text:translated.text,request:value.request});if(item.version===sourceVersion){translatedView(item.content,translated.text,value.request);item.button.disabled=false;item.button.textContent='收起中文译文';}item.queued=false;}
+    }catch(error){for(const item of batch){if(item.version!==sourceVersion)continue;item.content.replaceChildren(make('p','translation-status',error.message));item.queued=false;item.button.disabled=false;item.button.textContent='重试中文翻译';}}
   }}finally{translating=false;}
 }
 function showSources(sources,active=-1){
-  sourceObserver.disconnect();translationQueue=[];sourceVersion++;
+  translationQueue=[];sourceVersion++;
   const box=$('sources');box.replaceChildren();$('source-count').textContent=String(sources.length);
   if(!sources.length){const n=make('div','empty-evidence');n.append(make('div',null,'❞'),make('h2',null,'证据就在这里'),make('p',null,'论文标题、章节和原文片段\n会随回答一起出现。'));box.append(n);return;}
   for(const [index,source] of sources.entries()){
     const card=make('article','source-card'+(active===index?' active':''));card.id='source-'+index;
     const top=make('div','source-top');top.append(make('span','source-number',String(index+1)),make('span',null,source.paper_id));
     card.append(top,make('h3',null,source.title),make('div','source-section','▤  '+source.section));
+    if(source.source_url)try{const url=new URL(source.source_url);if(url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&['arxiv.org','ar5iv.labs.arxiv.org'].includes(url.hostname)){const link=make('a','source-link',source.content_type==='table'?'查看表格原文':'查看公式原文');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';card.append(link);}}catch{/* Older source records may not have a structured original. */}
     const turn=state.turns.findLast(t=>t.sources.some(s=>s.chunk_id===source.chunk_id));queueTranslation(source,card,turn);
     if(/^\d{4}\.\d{4,5}$/.test(source.paper_id)){const link=make('button','source-link','查看这篇论文的 PDF');link.addEventListener('click',()=>openPdf(source.paper_id));card.append(link);}
     box.append(card);
@@ -230,16 +262,21 @@ function renderMessages(){
   for(const [index,turn] of state.turns.entries()){
     const user=make('article','message user'),head=make('div','message-heading');head.append(make('span','avatar','↗'),make('span',null,'你'));user.append(head,make('div','message-text',turn.question));box.append(user);
     const assistant=make('article','message assistant'),heading=make('div','message-heading');if(turn.turn_id)assistant.dataset.turnId=turn.turn_id;heading.append(make('span','avatar','✳'),make('span',null,'AsterCite'));assistant.append(heading);
-    if(turn.coverage?.length){const chips=make('div','coverage-chips');for(const item of turn.coverage){const b=make('button','coverage-chip '+item.status,item.paper_id+' · '+(item.status==='addressed'?'已引用原文':'证据不足'));b.addEventListener('click',()=>openPdf(item.paper_id));chips.append(b);}assistant.append(chips);}
+    if(turn.coverage?.length){const chips=make('div','coverage-chips');for(const item of turn.coverage){const b=make('button','coverage-chip '+item.status,(state.papers.find(p=>p.paper_id===item.paper_id)?.title??item.paper_id)+' · '+(item.status==='addressed'?'已引用原文':'证据不足'));b.addEventListener('click',()=>openPdf(item.paper_id));chips.append(b);}assistant.append(chips);}
     const laidOut=turn.answer.replace(/(【\d{4}\.\d{4,5}[^】]*】)/gu,'\n\n### $1\n\n');
-    const text=make('div','message-text');inlineText(text,laidOut,turn.sources);assistant.append(text);
+    const text=make('div','message-text');inlineText(text,displayPaperTitles(splitAnswerControl(laidOut).body,state.papers),turn.sources);assistant.append(text);
     if(turn.coverage?.length){const coverage=make('details','paper-coverage');coverage.open=true;coverage.append(make('summary',null,`本轮逐篇分析 · ${turn.coverage.length} 篇论文`));
       for(const item of turn.coverage){const row=make('div','coverage-row');row.append(make('strong',null,item.paper_id+' · '+(state.papers.find(p=>p.paper_id===item.paper_id)?.title??'')),make('span','coverage-state',item.status==='addressed'?'已引用原文':'证据不足'),make('p',null,item.summary));coverage.append(row);}assistant.append(coverage);}
     const foot=make('div','answer-footer');const sources=make('button',null,turn.sources.length+' 处原文引用');sources.addEventListener('click',()=>{pinReader();state.sourceTurn=index;showSources(turn.sources);readerTab('sources');openEvidence();});foot.append(sources);
     const process=make('button','execution-open','查看执行过程');process.addEventListener('click',()=>inspectTurn(turn));foot.append(process);
+    if(turn.tasks){const progress=make('button','execution-open','查看任务进度');progress.addEventListener('click',()=>tasksPanel.open(turn.tasks));foot.append(progress);}
+    if(turn.long_term_memory?.items?.length){const memory=make('button','execution-open',`使用了 ${turn.long_term_memory.items.length} 条长期记忆`);memory.addEventListener('click',()=>longMemoryPanel.open(turn.long_term_memory));foot.append(memory);}
     if(state.mode==='live')foot.append(make('span',null,'· '+Math.round(turn.elapsed_ms/1000)+' 秒'),make('span',null,'· '+(turn.tokens===null?'本轮用量未报告':'本轮累计用量 '+turn.tokens+' token')));
     else foot.append(make('span',null,'· 示例回放'));
-    if(turn.status!=='completed')foot.append(make('span','answer-status','本轮未完成'));
+    if(turn.stopped)foot.append(make('span','answer-status','已停止'));
+    else if(turn.status!=='completed')foot.append(make('span','answer-status','本轮未完成'));
+    else if(turn.execution?.state==='partial')foot.append(make('span','answer-status','部分完成'));
+    else if(turn.execution?.state==='clarification')foot.append(make('span','answer-status','等待补充信息'));
     assistant.append(foot);box.append(assistant);
   }
   if(state.turns.length)showSources(state.turns.at(-1).sources);else showSources([]);
@@ -270,20 +307,25 @@ async function sendQuestion(){
   const question=$('question').value.trim();if(!question)return;
   if(Array.from(question).length>12000){notice('问题最多 12000 字。',true);return;}
   clearNotice();busy(true);
+  tasksPanel.begin();
   activity.reset({running:true,question});readerFollow.beginTurn();renderReaderFollow();
   let preview;
   try{
-    await ensureSession();
+    await ensureMemoryProfile();await ensureSession();
     const pending=make('article','message user pending-question');pending.append(make('div','message-heading','你'),make('div','message-text',question));$('messages').append(pending);$('welcome').hidden=true;$('chat-scroll').scrollTop=$('chat-scroll').scrollHeight;
-    preview=new AnswerPreview($('messages'),$('chat-scroll'),{onCitation:showCitation,onCitationHover:highlightCitation});
+    preview=new AnswerPreview($('messages'),$('chat-scroll'),{onCitation:showCitation,onCitationHover:highlightCitation,papers:state.papers});
     const headers={'Content-Type':'application/json','X-AsterCite-Request':'1','X-AsterCite-Session':state.active.token};if(state.accessToken)headers.Authorization='Bearer '+state.accessToken;
-    const response=await fetch('/api/sessions/'+state.active.id+'/question/stream',{method:'POST',headers,body:JSON.stringify({question})});
+    if(state.memoryCredential)headers['X-AsterCite-Memory']=state.memoryCredential;
+    currentRequest={id:crypto.randomUUID(),session:{...state.active},stopping:false};requestControls();
+    const response=await fetch('/api/sessions/'+state.active.id+'/question/stream',{method:'POST',headers,body:JSON.stringify({question,request_id:currentRequest.id})});
     if(response.status===401)$('access-dialog').showModal();
-    const view=await readQuestionStream(response,event=>{if(event.context){state.context=event.context;renderSessionPanels();}readerFollow.activity(event);activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});},update=>{if(update.context){state.context=update.context;renderSessionPanels();}readerFollow.answer(update);preview.update(update);});applyView(view);activity.finish();$('question').value='';
+    const view=await readQuestionStream(response,event=>{if(event.context){state.context=event.context;renderSessionPanels();}readerFollow.activity(event);activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});},update=>{if(update.context){state.context=update.context;renderSessionPanels();}readerFollow.answer(update);preview.update(update);},progress=>tasksPanel.update(progress));applyView(view);if(view.turns.at(-1)?.tasks)tasksPanel.update(view.turns.at(-1).tasks);activity.finish();$('question').value='';
     Object.assign(state.active,touchConversation(state.active,state.turns[0]?.question));persist();renderSessions();
-    if(state.turns.at(-1)?.status!=='completed')notice('本轮未完成，请检查模型服务。已发生的请求计入会话用量。',true);
-  }catch(e){activity.finish(false);if(preview?.text){preview.interrupt();document.querySelector('.pending-question')?.classList.remove('pending-question');}else document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{busy(false);}
+    if(state.turns.at(-1)?.stopped)notice('已停止本轮，收到的回答和执行记录已保存，可以继续提问。');
+    else if(state.turns.at(-1)?.status!=='completed')notice('本轮未完成，请查看执行过程中的请求结果。已发生的请求计入会话用量。',true);
+  }catch(e){activity.finish(false);if(preview?.text){preview.interrupt();document.querySelector('.pending-question')?.classList.remove('pending-question');}else document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{currentRequest=null;busy(false);$('current-tasks').hidden=true;}
 }
+$('stop-generation').addEventListener('click',async()=>{const run=currentRequest;if(!run||run.stopping)return;run.stopping=true;requestControls();try{const result=await api('/api/sessions/'+run.session.id+'/stop',{request_id:run.id},{session:run.session});if(currentRequest===run&&!result.stopped)notice('这一轮已经完成，正在保存结果。');}catch(error){if(currentRequest===run){run.stopping=false;requestControls();notice(error.message,true);}}});
 $('question-form').addEventListener('submit',e=>{e.preventDefault();void sendQuestion();});
 $('question').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();void sendQuestion();}});
 $('paper-search').addEventListener('input',renderPapers);
@@ -293,7 +335,7 @@ $('new-chat').addEventListener('click',()=>{if(state.busy)return;clearNotice();r
 document.addEventListener('keydown',e=>{if(e.key==='n'&&!e.ctrlKey&&!e.metaKey&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&!document.querySelector('dialog[open]')&&sessionMenu.hidden)$('new-chat').click();if(e.key==='Escape'){document.querySelector('.evidence-panel').classList.remove('mobile-open');document.querySelector('.sidebar').classList.remove('mobile-open');}});
 $('setup-open').addEventListener('click',()=>$('setup-dialog').showModal());
 for(const [button,panel] of [['guide-demo','demo-guide'],['guide-live','live-guide']])$(button).addEventListener('click',()=>{for(const id of ['guide-demo','guide-live'])$(id).classList.toggle('selected',id===button);for(const id of ['demo-guide','live-guide'])$(id).hidden=id!==panel;});
-$('memory-open').addEventListener('click',()=>sessionPanel.openMemory());
+$('memory-open').addEventListener('click',()=>{longMemoryPanel.override=null;longMemoryPanel.select('session');sessionPanel.openMemory();});
 $('access-form').addEventListener('submit',e=>{e.preventDefault();state.accessToken=$('access-token').value;$('access-token').value='';$('access-dialog').close();if(readingPaper)void reader.open(readingPaper,state.accessToken,true);notice('已设置访问口令，可以开始问答。');});
 $('export-chat').addEventListener('click',()=>{const blob=new Blob([JSON.stringify({application:'AsterCite',turns:state.turns},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),a=make('a');a.href=url;a.download='astercite-conversation.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 const closeEvidence=make('button','icon-text-button','关闭');closeEvidence.setAttribute('aria-label','关闭论文阅读');closeEvidence.addEventListener('click',()=>document.querySelector('.evidence-panel').classList.remove('mobile-open'));document.querySelector('.evidence-heading').append(closeEvidence);
@@ -304,7 +346,7 @@ async function init(){
   try{
     state.sample=await readJSON('/sample.json');
     let config;try{config=await readJSON('/api/config');if(!['demo','live'].includes(config.mode))throw new Error('模式无效');}catch{config=await readJSON('/config.json');}
-    state.mode=config.mode;state.papers=config.papers?.length?config.papers:state.sample.papers;state.initialContext=config.context??null;state.context=state.initialContext;readerFollow.setPapers(state.papers);
+    state.mode=config.mode;state.memorySupported=config.memory_supported===true;state.papers=config.papers?.length?config.papers:state.sample.papers;state.initialContext=config.context??null;state.context=state.initialContext;readerFollow.setPapers(state.papers);
     $('mode-badge').textContent=state.mode==='demo'?'示例回放':'完整问答';
     $('mode-note').textContent=state.mode==='demo'?'示例使用已保存的问答。部署后可自由提问。':'模型：'+config.model+' · 会话保存在当前问答服务';
     $('question').readOnly=state.mode==='demo';$('compact').disabled=state.mode!=='live';

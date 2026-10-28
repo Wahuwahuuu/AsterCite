@@ -2,7 +2,7 @@ export const TOOL_NAMES = ["search_papers", "retrieve_chunks"] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
 export interface SearchParams { query: string; limit?: number; allowed_paper_ids?: string[] }
-export interface RetrieveParams { query: string; paper_ids: string[]; top_k?: number; allowed_paper_ids?: string[];section?:'abstract' }
+export interface RetrieveParams { query: string; paper_ids: string[]; top_k?: number; allowed_paper_ids?: string[];section?:'abstract';content_type?:'text'|'table'|'equation'|'all';offset?:number;reading_mode?:'workbench-v1' }
 export interface Paper { paper_id: string; title: string; abstract: string;abstract_truncated?:boolean;abstract_length?:number }
 export interface Chunk {
   text: string;
@@ -15,6 +15,7 @@ export interface Chunk {
   citation?: string;
   index_version?: string;
   truncated?: boolean;
+  format?:'markdown';content_type?:'table'|'equation';source_url?:string;
 }
 export interface EvidenceIdentity {
   paper_id: string;
@@ -31,6 +32,7 @@ export interface P2HarnessConfig {
   evidenceIndex: ReadonlyMap<string, EvidenceIdentity>;
   publicPapers: readonly Paper[];
   abstractSources?:ReadonlyMap<string,Chunk>;
+  scientificSources?:ScientificReadingPort;
   commonPrompt?: string;
   executionVersion?: "r1" | "r2" | "full-v1";
   /** Full-project component ablation; both profiles retain real dialogue/native compaction. */
@@ -42,9 +44,13 @@ export interface P2HarnessConfig {
 }
 export interface SearchResult { papers: Paper[]; backend: string; index_version: string }
 export interface RetrieveResult { chunks: Chunk[]; backend: string; index_version: string;
-  query?: string; effective_query?: string; query_normalization?: string }
+  query?: string; effective_query?: string; query_normalization?: string;selection?:{offset:number;returned:number;total:number;next_offset:number;has_more:boolean;unavailable_papers?:string[];incomplete_sources?:string[]};reading_note?:string }
+export interface ScientificParams {query:string;paper_ids:string[];top_k:number;offset:number;content_type:'table'|'equation'|'all'}
+export interface ScientificReadingPort {sources:ReadonlyMap<string,Chunk>;identities:ReadonlyMap<string,EvidenceIdentity>;retrieve(params:ScientificParams,signal?:AbortSignal):Promise<RetrieveResult>}
 export interface WorkerTransport {
   request(method: ToolName, params: SearchParams | RetrieveParams, signal?: AbortSignal): Promise<unknown>;
+  readScientificSources?(params:ScientificParams,signal?:AbortSignal):Promise<unknown>;
+  memoryOperation?(params:Record<string,unknown>,signal?:AbortSignal):Promise<unknown>;
 }
 
 export class RuntimeFailure extends Error {

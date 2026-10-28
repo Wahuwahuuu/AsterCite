@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {fauxAssistantMessage as reply,fauxToolCall as call,type Api,type Model} from '@earendil-works/pi-ai';
+import {createHash} from 'node:crypto';
+import {clampMaxTokensToContext} from '@earendil-works/pi-ai/api/simple-options';
+import {fauxAssistantMessage as reply,fauxToolCall as call,normalizeContext,type Api,type Model} from '@earendil-works/pi-ai';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
-import {ContextTracker,compactionPolicy,estimateVisibleContext,reachedContextThreshold,sessionContextInput} from '../../agent/workbench-context.ts';
+import {ContextTracker,compactionPolicy,estimateVisibleContext,reachedContextThreshold,requestCapacity,sessionContextInput,providerContext} from '../../agent/workbench-context.ts';
 import {traceInput} from '../../agent/execution-trace.ts';
 import {DomainMemory} from '../../agent/domain-memory.ts';
 import {mainFixture,preparation,SOURCE_IDS} from './main-fixture.ts';
@@ -10,10 +12,55 @@ import {contextCut} from '../../agent/context-compaction.ts';
 import {wrapSnapshot} from '../../agent/main-controls.ts';
 const controls={arm:'C',reflect:false,compaction:'native',reliability:'candidate',implementation_id:'1'.repeat(64)} as const;
 
-test('product compaction crosses 80 percent and reserves the same recent context for either trigger',()=>{
-  const policy=compactionPolicy(32768);assert.equal(policy.threshold_tokens,26215);assert.equal(policy.keep_recent_tokens,8192);
-  assert.equal(reachedContextThreshold(26214,32768),false);assert.equal(reachedContextThreshold(26215,32768),true);
+test('product compaction crosses 70 percent and reserves the same recent context for either trigger',()=>{
+  const policy=compactionPolicy(32768);assert.equal(policy.threshold_tokens,22938);assert.equal(policy.keep_recent_tokens,8192);
+  assert.equal(reachedContextThreshold(22937,32768),false);assert.equal(reachedContextThreshold(22938,32768),true);
   assert.equal(compactionPolicy(8192).keep_recent_tokens,2048);
+});
+
+test('capacity also reserves requested output and overhead before reaching the compression threshold',()=>{
+  assert.equal(reachedContextThreshold(20000,32768),false);
+  const longAnswer=requestCapacity(20000,32768,16000,16000);
+  assert.equal(longAnswer.fits,false);assert.equal(longAnswer.safety_tokens,4096);
+  assert.ok(20000+longAnswer.max_output_tokens+longAnswer.safety_tokens<=32768);
+  assert.equal(requestCapacity(20000,32768,4096,4096).fits,true);
+  assert.equal(requestCapacity(32768,32768,4096).max_output_tokens,0);
+});
+
+test('a replaced workspace does not let stale SDK prefix usage squeeze the next answer down to one token',async()=>{
+  const seed=await mainFixture([]),model={...seed.harness.session.model!,contextWindow:32768,maxTokens:4096} as Model<Api>;seed.harness.dispose();
+  const prior=reply('Earlier explanation',{timestamp:1});prior.usage={...prior.usage,input:26000,output:1000,cacheRead:0,cacheWrite:0,totalTokens:27000};
+  const context=normalizeContext({messages:[prior,{role:'user' as const,content:[{type:'text' as const,text:'new evidence '.repeat(1200)}],timestamp:2}]});
+  assert.equal(clampMaxTokensToContext(model,context,4096),1);
+  const actual=providerContext(context);assert.equal(clampMaxTokensToContext(model,actual,4096),4096);
+  assert.equal(prior.usage.input,26000);assert.equal(estimateVisibleContext(actual),estimateVisibleContext(context));
+});
+
+test('every auxiliary and main request leaves output space without cutting source evidence',async()=>{
+  const seed=await mainFixture([]),model={...seed.harness.session.model!,contextWindow:8192,maxTokens:8192} as Model<Api>;seed.harness.dispose();
+  const limits:number[]=[];
+  const inspect=(context:Parameters<typeof estimateVisibleContext>[0],maxTokens:number|undefined)=>{
+    assert.ok(maxTokens);const capacity=requestCapacity(estimateVisibleContext(context),model.contextWindow,maxTokens!,model.maxTokens);
+    assert.equal(capacity.fits,true);limits.push(maxTokens!);
+  };
+  const f=await mainFixture([(context,options)=>{inspect(context,options?.maxTokens);return reply(JSON.stringify(preparation));},
+    (context,options)=>{inspect(context,options?.maxTokens);assert.ok(JSON.stringify(context).includes('A😀 source supports the fact.'));return reply(`完整原文说明 [cite:${SOURCE_IDS[0]}]。`);}],[[0]],{answerPolicy:'workbench-v1',controls,model});
+  try{const record=await f.harness.runTurn('解释论文',['p1'],'capacity');assert.equal(record.status,'completed',record.error??'');assert.equal(record.requests.length,2);assert.equal(limits.length,2);assert.ok(limits.every(n=>n<=model.maxTokens));assert.ok(record.final_answer.includes('完整原文说明'));}
+  finally{f.harness.dispose();}
+});
+
+test('large output allocation can trigger capacity compression below the normal threshold',async()=>{
+  const seed=await mainFixture([]),model={...seed.harness.session.model!,contextWindow:32768,maxTokens:24576} as Model<Api>;seed.harness.dispose();
+  const f=await mainFixture([reply(JSON.stringify(preparation)),(context,options)=>{
+    assert.equal(requestCapacity(estimateVisibleContext(context),model.contextWindow,options!.maxTokens!,model.maxTokens).fits,true);
+    return reply(`容量整理后的回答 [cite:${SOURCE_IDS[0]}]。`);
+  }],[[0]],{answerPolicy:'workbench-v1',controls,model,p2:{profile:'B',executionVersion:'full-v1',answerContract:'full-v1-json',indexVersion:'prepared-fixture',evidenceIndex:new Map(seed.chunks.map(chunk=>[chunk.chunk_id,{...chunk,index_version:'prepared-fixture',text_sha256:createHash('sha256').update(chunk.text).digest('hex')}])),publicPapers:[{paper_id:'p1',title:'Paper One',abstract:'CATALOG_ONLY'}],nlu:true,reflect:false,structuredMemory:true,stageOutputLimits:{question_frame:4096,evidence_check:4096,generation:24576}}});
+  try{
+    for(let i=0;i<6;i++)await f.harness.session.sendCustomMessage({customType:'capacity-history',content:'历史说明。'.repeat(400)+i,display:false},{triggerTurn:false});
+    assert.ok(f.harness.contextView().used_tokens!<compactionPolicy(model.contextWindow).threshold_tokens);
+    const record=await f.harness.runTurn('解释论文',['p1'],'capacity-compaction');assert.equal(record.status,'completed',record.error??'');
+    const compression=f.harness.contextView().compressions.find(item=>item.reason==='capacity');assert.equal(compression?.status,'completed');assert.ok(compression!.after_tokens<compression!.before_tokens);assert.equal(record.requests.length,2);
+  }finally{f.harness.dispose();}
 });
 
 test('current session occupancy comes from retained content and is never overwritten by request usage',()=>{
@@ -68,15 +115,15 @@ test('manual compression uses the configured retention, records real before/afte
   }finally{f.harness.dispose();}
 });
 
-test('automatic compression uses actual retained context at 80 percent and persists its result',async()=>{
+test('automatic compression uses actual retained context at 70 percent and persists its result',async()=>{
   const seed=await mainFixture([]);const model={...seed.harness.session.model!,contextWindow:32768,maxTokens:4096} as Model<Api>;seed.harness.dispose();
   const f=await mainFixture([reply(JSON.stringify(preparation)),reply(`原文说明 [cite:${SOURCE_IDS[0]}]。`)],[[0]],{answerPolicy:'workbench-v1',controls,model});
   try{
-    assert.equal(f.harness.settings.getCompactionSettings().reserveTokens,6553);
+    assert.equal(f.harness.settings.getCompactionSettings().reserveTokens,9830);
     assert.equal(f.harness.session.autoCompactionEnabled,false);assert.equal(f.harness.contextView().auto_enabled,true);
     for(let i=0;i<10;i++)await f.harness.session.sendCustomMessage({customType:'visible-history-fixture',content:'History description. '.repeat(520)+i,display:false},{triggerTurn:false});
     const record=await f.harness.runTurn('解释论文',['p1'],'automatic');assert.equal(record.status,'completed',record.error??'');assert.equal(record.requests.length,2);
-    const compression=f.harness.contextView().compressions.find(item=>item.reason==='threshold');assert.equal(compression?.status,'completed',JSON.stringify({events:record.compaction_events,window:f.harness.session.model?.contextWindow,records:f.harness.contextView().compressions.map(c=>({reason:c.reason,status:c.status}))}));assert.ok(compression!.before_tokens>compression!.after_tokens);assert.equal(f.harness.contextView().policy.threshold_percent,80);
+    const compression=f.harness.contextView().compressions.find(item=>item.reason==='threshold');assert.equal(compression?.status,'completed',JSON.stringify({events:record.compaction_events,window:f.harness.session.model?.contextWindow,records:f.harness.contextView().compressions.map(c=>({reason:c.reason,status:c.status}))}));assert.ok(compression!.before_tokens>compression!.after_tokens);assert.equal(f.harness.contextView().policy.threshold_percent,70);
   }finally{f.harness.dispose();}
 });
 
@@ -96,10 +143,10 @@ test('the displayed retained count is the threshold decision input, even after a
     const manager=f.harness.session.sessionManager,edited=manager.appendMessage({role:'user',content:[{type:'text',text:'待删除历史。'.repeat(1000)}],timestamp:1});
     const enlarged=f.harness.contextView().used_tokens!;assert.ok(enlarged>small);manager.appendContextEdit(edited,null);assert.equal(f.harness.contextView().used_tokens,small);
     for(let i=0;i<10;i++)await f.harness.session.sendCustomMessage({customType:'retained-history',content:'历史上下文内容。'.repeat(400)+i,display:false},{triggerTurn:false});
-    assert.ok(f.harness.contextView().used_tokens!>=26215);
+    assert.ok(f.harness.contextView().used_tokens!>=22938);
     const record=await f.harness.runTurn('继续说明论文',['p1'],'large-retained');assert.equal(record.status,'completed',record.error??'');assert.equal(record.requests.length,2);
     assert.ok(starts.length>0);assert.ok(starts.every(start=>start.decision===start.display));
-    assert.ok(f.harness.contextView().used_tokens!<26215);snapshot=f.harness.snapshot();snapshot.state.context_state!.latest!.tokens=1;snapshot=wrapSnapshot(snapshot.state,controls);
+    assert.ok(f.harness.contextView().used_tokens!<22938);snapshot=f.harness.snapshot();snapshot.state.context_state!.latest!.tokens=1;snapshot=wrapSnapshot(snapshot.state,controls);
   }finally{f.harness.dispose();}
   const restored=await mainFixture([],[[]],{answerPolicy:'workbench-v1',controls,model,controlledSnapshot:snapshot});
   try{assert.ok(restored.harness.contextView().used_tokens!>1);assert.equal(restored.harness.contextView().basis,'estimate');}finally{restored.harness.dispose();}

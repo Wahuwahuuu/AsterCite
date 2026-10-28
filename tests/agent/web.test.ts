@@ -9,6 +9,7 @@ import { PaperWebSession, type WebSessionPort, type WebView, type WebActivity } 
 import { parseConfig, sha } from "../../agent/config.ts";
 import { RuntimeFailure } from "../../agent/contracts.ts";
 import {SessionBudget} from '../../agent/budget.ts';
+import {randomUUID} from 'node:crypto';
 import type { Assets } from "../../agent/assets.ts";
 import { mainFixture, preparation, final, PREPARED_INDEX } from "./main-fixture.ts";
 
@@ -24,6 +25,28 @@ async function fixture(extra:Partial<WebServerOptions>={}){
   const remove=(path:string,headers:Record<string,string>={})=>fetch(origin+path,{method:"DELETE",headers:{Origin:origin,"X-AsterCite-Request":"1",...headers}});
   return {root,server,origin,post,remove,calls:()=>calls,async close(){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});}};
 }
+
+test('stop is authenticated and bound to the active request; stream saves progress and stale stops cannot cancel the next turn',async()=>{
+  let started!:()=>void;const ready=new Promise<void>(resolve=>{started=resolve;});let aborted=false;
+  const f=await fixture({factory:async()=>({async view(){return structuredClone(empty);},async configure(){return structuredClone(empty);},async close(){},async ask(question,_progress,_answer,options){
+    if(question==='first'){options?.onTasks?.({version:1,phase:'running',items:[]});started();await new Promise<void>(resolve=>{if(options?.signal?.aborted){aborted=true;resolve();}else options?.signal?.addEventListener('abort',()=>{aborted=true;resolve();},{once:true});});}
+    return {...structuredClone(empty),turns:[{question,answer:'保留回答',sources:[],status:question==='first'?'aborted':'completed',stopped:question==='first',elapsed_ms:1,requests:1,tokens:null,stages:[],tasks:{version:1,phase:question==='first'?'stopped':'completed',items:[]}}]};
+  }})});
+  try{
+    const owner=await (await f.post('/api/sessions',{})).json(),path='/api/sessions/'+owner.id,headers={'X-AsterCite-Session':owner.token},id=randomUUID();
+    const stream=await f.post(path+'/question/stream',{question:'first',request_id:id},headers);await ready;
+    assert.equal((await f.post(path+'/stop',{request_id:id})).status,403);
+    assert.equal((await (await f.post(path+'/stop',{request_id:randomUUID()},headers)).json()).stopped,false);assert.equal(aborted,false);
+    assert.equal((await (await f.post(path+'/stop',{request_id:id},headers)).json()).stopped,true);
+    const payload=await stream.text();assert.match(payload,/task_progress/);assert.match(payload,/"phase":"stopped"/);assert.equal(aborted,true);
+    assert.equal((await (await f.post(path+'/stop',{request_id:id},headers)).json()).stopped,false);
+    const next=await f.post(path+'/question',{question:'second',request_id:randomUUID()},headers);assert.equal(next.status,200);assert.equal((await next.json()).turns[0].status,'completed');
+  }finally{await f.close();}
+});
+test('a stop sent before the question reaches the adapter cancels only its matching request',async()=>{
+  let sawAbort=false;const f=await fixture({factory:async()=>({async view(){return structuredClone(empty);},async configure(){return structuredClone(empty);},async close(){},async ask(_question,_progress,_answer,options){sawAbort=Boolean(options?.signal?.aborted);return structuredClone(empty);}})});
+  try{const owner=await (await f.post('/api/sessions',{})).json(),path='/api/sessions/'+owner.id,headers={'X-AsterCite-Session':owner.token},id=randomUUID();assert.equal((await f.post(path+'/stop',{request_id:id},headers)).status,200);assert.equal((await f.post(path+'/question',{question:'cancel early',request_id:id},headers)).status,200);assert.equal(sawAbort,true);}finally{await f.close();}
+});
 
 test("deleting an owned conversation removes its private files without opening an incompatible session",async()=>{
   let opened=0;
@@ -184,7 +207,7 @@ test("website adapter runs the existing Harness, saves citations and restores me
   const options={directory:root,assets,config,worker:{async request(){return {backend:"rrf_rerank",index_version:PREPARED_INDEX,chunks:[seed.chunks[0]]};}},sources,key,
     createHarness:async(params:Parameters<typeof import("../../agent/session-main-v2.ts").MainPaperHarness.create>[0])=>{
       const {modelRuntime,model,...extra}=params;
-      return (await mainFixture([reply(JSON.stringify({...preparation,queries:["find "+key]})),reply(JSON.stringify(final))],[[0]],extra)).harness;
+      return (await mainFixture([reply(JSON.stringify({...preparation,queries:["find "+key]})),reply(JSON.stringify({...final,execution:{state:'complete',remaining_needs:[],needs_sources:true}}))],[[0]],extra)).harness;
     }};
   try{
     const legacy=await SessionBudget.open(root,assets.implementationId,config.session.max_turns);await legacy.close();
@@ -192,8 +215,8 @@ test("website adapter runs the existing Harness, saves citations and restores me
     await session.configure(["p1"],false);
     await assert.rejects(session.configure(["not-in-corpus"],false),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_SCOPE");
     await assert.rejects(session.configure(["p1"],true),(e:unknown)=>e instanceof RuntimeFailure&&e.code==="INVALID_CONFIG");
-    const events:WebActivity[]=[];
-    const streamed:string[]=[];const first=await session.ask("p1 requested fact "+key,event=>events.push(event),update=>{assert.ok(update.sources.some(source=>source.chunk_id===seed.chunks[0].chunk_id));streamed.push(update.text);});assert.equal(first.turns[0].status,"completed");assert.ok(!JSON.stringify(first).includes(key));assert.equal(streamed.at(-1),first.turns[0].answer);
+    const events:WebActivity[]=[],tasks:unknown[]=[];
+    const streamed:string[]=[];const first=await session.ask("p1 requested fact "+key,event=>events.push(event),update=>{assert.ok(update.sources.some(source=>source.chunk_id===seed.chunks[0].chunk_id));streamed.push(update.text);},{onTasks:progress=>tasks.push(progress)});assert.equal(first.turns[0].status,"completed");assert.ok(!JSON.stringify(first).includes(key));assert.equal(streamed.at(-1),first.turns[0].answer);assert.ok(first.turns[0].tasks);assert.ok(tasks.length>1);assert.ok(!JSON.stringify(tasks).includes(key));
     assert.ok(events.some(e=>e.kind==="model"&&e.status==="running"));
     assert.ok(events.some(e=>e.tool==="retrieve_chunks"&&e.status==="completed"&&e.paper_ids?.includes('p1')));
     assert.ok(events.filter(e=>e.status==='running').every(e=>e.paper_ids===undefined));
@@ -204,14 +227,14 @@ test("website adapter runs the existing Harness, saves citations and restores me
     const firstModel=events.find(e=>e.kind==="model")!;
     const detail=await session.detail(first.turns[0].turn_id!,firstModel.id);assert.ok(detail?.input);assert.ok(detail?.output);assert.ok(!JSON.stringify(detail).includes(key));
     assert.equal(first.turns[0].sources[0].text,seed.chunks[0].text);assert.equal(first.budget.model_attempts,2);assert.equal(first.memory.paper_id,"p1");
-    assert.equal(first.memory.notes?.[0].source_turn,first.turns[0].turn_id);assert.ok(first.memory.notes?.[0].answer_excerpt.includes('source supports'));assert.equal(first.context?.policy.threshold_percent,80);assert.ok(events.some(event=>event.context?.used_tokens!==null&&event.context?.used_tokens!==undefined));
+    assert.equal(first.memory.notes?.[0].source_turn,first.turns[0].turn_id);assert.ok(first.memory.notes?.[0].answer_excerpt.includes('source supports'));assert.equal(first.context?.policy.threshold_percent,70);assert.ok(events.some(event=>event.context?.used_tokens!==null&&event.context?.used_tokens!==undefined));
     await session.close();
     const savedCheckpoint=await readFile(join(root,'checkpoints',first.turns[0].turn_id+'.json'),'utf8'),beforeLedger=await readdir(join(root,'ledger'));
     const nextConfig=structuredClone(config);nextConfig.model.model_id='updated-model';nextConfig.session.max_turns=100;nextConfig.session.compaction='native';
     const upgraded={...options,config:nextConfig,assets:{...assets,implementationId:'e'.repeat(64)}};
     session=await PaperWebSession.open(upgraded);const restored=await session.view();
     assert.equal(restored.turns.length,1);assert.deepEqual(restored.scope,["p1"]);assert.equal(restored.memory.paper_id,"p1");
-    assert.deepEqual(restored.memory.notes,first.memory.notes);assert.equal(restored.context?.basis,'estimate');assert.ok(restored.context!.used_tokens!>0);assert.equal(restored.context?.policy.version,'workbench-context-v2');
+    assert.deepEqual(restored.memory.notes,first.memory.notes);assert.equal(restored.context?.basis,'estimate');assert.ok(restored.context!.used_tokens!>0);assert.equal(restored.context?.policy.version,'workbench-context-v3');
     assert.deepEqual(restored.turns[0].activity,first.turns[0].activity);
     assert.equal(restored.budget.model_attempts,2);assert.equal(restored.budget.max_turns,first.budget.max_turns);assert.deepEqual(await readdir(join(root,'ledger')),beforeLedger);
     assert.equal(await readFile(join(root,'checkpoints',first.turns[0].turn_id+'.json'),'utf8'),savedCheckpoint);
@@ -229,7 +252,7 @@ test("scheduled native compaction survives closing the web adapter and remains w
   const options={directory:root,assets,config,worker:{async request(){return {backend:"rrf_rerank",index_version:PREPARED_INDEX,chunks:[seed.chunks[0]]};}},
     sources:new Map(seed.chunks.map(c=>[c.chunk_id,c])),key:"fixture-memory-only",
     createHarness:async(params:Parameters<typeof import("../../agent/session-main-v2.ts").MainPaperHarness.create>[0])=>{
-      const {modelRuntime,model,...extra}=params;return (await mainFixture([reply(JSON.stringify(preparation)),reply(JSON.stringify(final))],[[0]],extra)).harness;
+      const {modelRuntime,model,...extra}=params;return (await mainFixture([reply(JSON.stringify(preparation)),reply(JSON.stringify({...final,execution:{state:'complete',remaining_needs:[],needs_sources:true}}))],[[0]],extra)).harness;
     }};
   try{
     let session=await PaperWebSession.open(options);assert.equal((await session.ask("p1 fact")).turns[0].status,"completed");

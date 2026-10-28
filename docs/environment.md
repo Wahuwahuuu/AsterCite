@@ -8,7 +8,7 @@
 
 ```powershell
 npm ci --ignore-scripts
-uv sync --frozen --extra retrieval
+uv sync --frozen --extra retrieval --extra memory
 ```
 
 uv 安装方法见 [官方文档](https://docs.astral.sh/uv/getting-started/installation/)。

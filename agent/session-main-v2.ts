@@ -13,14 +13,22 @@ import { DomainMemory, type DialogueRecord } from "./domain-memory.ts";
 import { nativeMemoryExtension, MEMORY_EXTENSION, safeSessionEntries, restoreSnapshot, assistantSignature, type SessionSnapshot } from "./session-memory.ts";
 import { parseFinalAnswer, FINAL_ANSWER_INSTRUCTION } from "./final-answer.ts";
 import { preparedPipelineTrace, type PreparedTurnRecord } from "./pipeline-trace-prepared-v1.ts";
-import { QUESTION_PREPARATION_INSTRUCTION, PREPARATION_VERSION, parseQuestionPreparation, preparationPayload, rawQuestionFrame, type PreparationContext, type PreparationRecord } from "./question-preparation.ts";
+import { QUESTION_PREPARATION_INSTRUCTION, PREPARATION_VERSION, parseQuestionPreparation, preparationPayload, rawQuestionFrame,isMemorySessionInput, type PreparationContext, type PreparationRecord } from "./question-preparation.ts";
 import { traceInput,traceOutput,traceArguments,type ExecutionEvent } from "./execution-trace.ts";
 import { selectedTargets,coverageInstruction,validateCoverage } from "./selected-scope.ts";
 import {abstractReadingSection,groundedGenerationMessages,withAbstractReading} from './paper-reading.ts';
 import {prepareWorkbenchAnswer,preferWorkbenchAnswer,workbenchCoverageInstruction,workbenchSystemPrompt,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer} from "./workbench-answer.ts";
-import {ContextTracker,compactionPolicy,estimateVisibleContext,sessionContextInput,reachedContextThreshold,type ContextView} from './workbench-context.ts';
+import {withScientificReading,scientificContentType} from './scientific-reading.ts';
+import {ContextTracker,compactionPolicy,estimateVisibleContext,sessionContextInput,reachedContextThreshold,requestCapacity,providerContext as currentProviderContext,type ContextView} from './workbench-context.ts';
 import {contextCut} from './context-compaction.ts';
 import {AnswerStreamer,type AnswerUpdate} from './answer-stream.ts';
+import {fitPreparationHistory,type PreparationHistoryInfo} from './preparation-history.ts';
+import {MultiPaperComparison,comparisonBudget,COMPARISON_CHECK_INSTRUCTION} from './multi-paper.ts';
+import {memoryProjection,type MemoryRecall} from './long-term-memory.ts';
+import {MEMORY_SYNTHESIS_INSTRUCTION,parseMemoryDigest,type MemoryDigest} from './memory-synthesis.ts';
+import {TurnExecutionTracker,TURN_EXECUTION_INSTRUCTION,COMPLETION_CHECK_INSTRUCTION,executionFromOutput,parseTurnExecution,type TurnExecution} from './turn-execution.ts';
+import {displayPaperTitles} from '../web/answer-format.js';
+import {TaskProgressTracker,GOAL_PROGRESS_INSTRUCTION,type TaskProgress} from './task-progress.ts';
 
 // Versioned main controls; historical prepared/session implementations remain frozen.
 
@@ -65,8 +73,10 @@ export interface MainHarnessOptions {
   authorizeRequest?: (request: RequestRecord) => Promise<void>;
   onExecutionEvent?: (event:ExecutionEvent)=>void;
   onAnswerUpdate?:(update:AnswerUpdate)=>void;
+  onTaskProgress?:(progress:TaskProgress)=>void;
   selectedScopeCoverage?:boolean;
   answerPolicy?:"strict"|"workbench-v1";
+  completionPolicy?:'turn-state-v1';
   controlledSnapshot?: ControlledSnapshot;
   cwd: string;
   worker: WorkerTransport;
@@ -101,6 +111,10 @@ export class MainPaperHarness {
   private answer = "";
   private readonly pendingRequests = new Set<Promise<void>>();
   private input = "";
+  private longTermMemory?:MemoryRecall;
+  private memoryDigest?:MemoryDigest;
+  getLongTermMemoryDigest(){return this.memoryDigest;}
+  setLongTermMemory(recall:MemoryRecall):void{if(this.workbench)this.longTermMemory=structuredClone(recall);}
   private frame: QuestionFrame | undefined;
   private check: EvidenceCheck | undefined;
   private supplementUsed = false;
@@ -118,14 +132,23 @@ export class MainPaperHarness {
   private compactBeforeNextTurn = false;
   private contextTracker:ContextTracker;
   private answerStreamer:AnswerStreamer;
+  private streamedContext:{request:RequestRecord;evidence:Map<string,Chunk>}|undefined;
+  private streamedPreview(){return this.streamedContext;}
   private lastContextAttempt='';
   private contextIdle=true;
   private autonomousPreparation = false;
   private selectedRequired:string[]=[];
+  private comparison:MultiPaperComparison|undefined;
+  private comparisonCalls=new Map<string,{paper_ids:string[];query:string}>();
+  private comparisonProjection:{ids:string;message:Message}|undefined;
+  private comparisonProgress={chunks:0,attempts:0};
   private workbenchBest:{answer:WorkbenchAnswer;request:RequestRecord|undefined;evidence:Map<string,Chunk>}|undefined;
   private workbenchTruncated=false;
-  private workbenchContinuationUsed=false;
-  private trace(event:ExecutionEvent):void{try{this.options.onExecutionEvent?.(JSON.parse(redactText(JSON.stringify(event),this.options.secrets)));}catch{/* Observation must never change inference. */}}
+  private executionTracker=new TurnExecutionTracker();
+  private currentExecution:TurnExecution|undefined;
+  private completionChecks=0;
+  private tasks?:TaskProgressTracker;
+  private trace(event:ExecutionEvent):void{try{const safe=JSON.parse(redactText(JSON.stringify(event),this.options.secrets));this.tasks?.event(safe);this.options.onExecutionEvent?.(safe);}catch{/* 展示不能改变问答结果。 */}}
   private autonomousEvidenceBefore = new Set<string>();
   private preparation: PreparationRecord = { version: PREPARATION_VERSION, status: "skipped", request_id: null, reason: "No user turn", result: null };
   private get useDomainMemory(): boolean { return this.full && this.options.p2?.profile === "B" && this.options.p2.structuredMemory !== false; }
@@ -134,7 +157,7 @@ export class MainPaperHarness {
   private get full(): boolean { return this.options.p2?.executionVersion === "full-v1"; }
   private get r2(): boolean { return this.options.p2?.executionVersion === "r2" || this.full; }
   private get workbench():boolean{return this.full&&this.options.answerPolicy==='workbench-v1';}
-  private get finalInstruction():string{return this.workbench?WORKBENCH_ANSWER_INSTRUCTION:FINAL_ANSWER_INSTRUCTION;}
+  private get finalInstruction():string{return this.workbench?WORKBENCH_ANSWER_INSTRUCTION+'\n'+TURN_EXECUTION_INSTRUCTION:FINAL_ANSWER_INSTRUCTION;}
   private retainedWorkbenchAnswer(){return this.workbenchBest;}
 
   private constructor(session: AgentSession, settings: SettingsManager, options: MainHarnessOptions) {
@@ -155,10 +178,10 @@ export class MainPaperHarness {
     session.subscribe((event) => {
       const ledger = this.ledger;
       if (!ledger) return;
-      if(this.workbench&&options.onAnswerUpdate&&ledger.phase==='agent'&&['generate','closing','citation_repair'].includes(ledger.stage)){
+      if(this.workbench&&ledger.phase==='agent'&&(['generate','closing','citation_repair'].includes(ledger.stage)||ledger.stage==='compare_supplement'&&!this.comparison?.baselineMissing.length)){
         const partial=event.type==='message_update'&&event.assistantMessageEvent.type==='text_delta'?event.assistantMessageEvent.partial:event.type==='message_end'&&event.message.role==='assistant'?event.message:undefined;
         const request=ledger.record.requests.at(-1);
-        if(partial&&request)this.answerStreamer.update(request.request_id,partial.content.filter(block=>block.type==='text').map(block=>block.text).join('\n'),[...this.lastMainEvidence.keys()],event.type==='message_end');
+        if(partial&&request){this.answerStreamer.update(request.request_id,partial.content.filter(block=>block.type==='text').map(block=>block.text).join('\n'),[...this.lastMainEvidence.keys()],event.type==='message_end',text=>displayPaperTitles(text,this.options.p2?.publicPapers));if(this.answerStreamer.snapshot().request_id===request.request_id)this.streamedContext={request,evidence:new Map(this.lastMainEvidence)};}
       }
       if (event.type === "agent_settled") ledger.record.agent_settled = true;
       if (event.type === "message_end" && event.message.role === "assistant") {
@@ -167,7 +190,7 @@ export class MainPaperHarness {
       if (event.type === "tool_execution_start") {
         try {
           const entry = ledger.beginTool(event.toolName, event.toolCallId, "start");
-          if(this.options.onExecutionEvent&&TOOL_NAMES.includes(event.toolName as typeof TOOL_NAMES[number]))this.trace({id:event.toolCallId,kind:"tool",status:"running",stage:ledger.stage,phase:ledger.phase,parent_id:ledger.record.requests.at(-1)?.request_id,origin:"model",tool:event.toolName as typeof TOOL_NAMES[number],input:traceArguments(event.args)});
+          if((this.options.onExecutionEvent||this.tasks)&&TOOL_NAMES.includes(event.toolName as typeof TOOL_NAMES[number]))this.trace({id:event.toolCallId,kind:"tool",status:"running",stage:ledger.stage,phase:ledger.phase,parent_id:ledger.record.requests.at(-1)?.request_id,origin:"model",tool:event.toolName as typeof TOOL_NAMES[number],input:traceArguments(event.args)});
           if (this.r2) entry.execution_source = "model";
           if (options.p2 && ledger.closing) { ledger.rejectTool(event.toolCallId, new Error("Model requested a tool while retrieval was closed")); if(!this.workbench)ledger.fail("PROTOCOL_ERROR", new Error("Model requested a tool while retrieval was closed")); }
           else if (options.p2 && ledger.toolCount(event.toolName) >= ledger.toolLimit(event.toolName)) {
@@ -190,7 +213,9 @@ export class MainPaperHarness {
       if (event.type === "tool_execution_end") {
         ledger.endTool(event.toolCallId, event.isError);
         const tool = ledger.record.tools.findLast((entry) => entry.tool_call_id === event.toolCallId);
-        if(this.options.onExecutionEvent&&TOOL_NAMES.includes(event.toolName as typeof TOOL_NAMES[number]))this.trace({id:event.toolCallId,kind:"tool",status:event.isError?"error":"completed",stage:ledger.stage,phase:ledger.phase,parent_id:tool?.model_request_id??ledger.record.requests.at(-1)?.request_id,origin:"model",tool:event.toolName as typeof TOOL_NAMES[number],output:traceOutput(event.result,this.options.secrets),elapsed_ms:tool?.elapsed_ms});
+        const comparisonCall=this.comparisonCalls.get(event.toolCallId);
+        if(this.comparison&&comparisonCall&&tool?.executed)this.comparison.observe(comparisonCall.paper_ids,event.isError?[]:(event.result.details as RetrieveResult|undefined)?.chunks??[],event.isError);
+        if((this.options.onExecutionEvent||this.tasks)&&TOOL_NAMES.includes(event.toolName as typeof TOOL_NAMES[number]))this.trace({id:event.toolCallId,kind:"tool",status:event.isError?"error":"completed",stage:ledger.stage,phase:ledger.phase,parent_id:tool?.model_request_id??ledger.record.requests.at(-1)?.request_id,origin:"model",tool:event.toolName as typeof TOOL_NAMES[number],output:traceOutput(event.result,this.options.secrets),elapsed_ms:tool?.elapsed_ms});
         if (event.isError && (!options.p2 || (tool?.status !== "budget_rejected" && tool?.status !== "rejected"))&&!this.workbench) ledger.fail("TOOL_ERROR", new Error("Pi tool execution failed"));
         else if (event.toolName === "retrieve_chunks") {
           const details = event.result.details as RetrieveResult | undefined;
@@ -209,7 +234,7 @@ export class MainPaperHarness {
     if(options.answerPolicy!==undefined&&!['strict','workbench-v1'].includes(options.answerPolicy))throw new RuntimeFailure('INVALID_CONFIG','Unknown answer policy');
     if (options.snapshot) throw new RuntimeFailure("INVALID_SNAPSHOT", "Use a component-bound controlledSnapshot, not a raw snapshot");
     if (options.p2?.profile !== (controls.arm === "A" ? "A" : "B") || Boolean(options.p2.reflect) !== controls.reflect) throw new RuntimeFailure("INVALID_CONFIG", "External arm/Reflect differs from the internal configuration");
-    if(options.answerPolicy==='workbench-v1'&&options.p2)options={...options,p2:withAbstractReading(options.p2)};
+    if(options.answerPolicy==='workbench-v1'&&options.p2)options={...options,p2:withScientificReading(withAbstractReading(options.p2))};
     if (options.controlledSnapshot) options = { ...options, snapshot: unwrapSnapshot(options.controlledSnapshot, controls, options.p2!.indexVersion) };
     if (options.questionPreparation !== PREPARATION_VERSION || options.p2?.executionVersion !== "full-v1" ||
       options.p2.profile === "B" && (options.p2.nlu === false || options.p2.structuredMemory === false)) {
@@ -243,7 +268,7 @@ export class MainPaperHarness {
         options.p2?.executionVersion === "full-v1" ? [nativeMemoryExtension(() => getHarness().memory.summary(getHarness().dialogue, getHarness().useDomainMemory))] : []),
       tools: [...TOOL_NAMES], excludeTools: ["mcp__*"], customTools: createPaperTools(options.worker, {
         knownPaperIds: options.knownPaperIds, getLedger: () => getHarness().activeLedger(), getScope: () => getHarness().scope,
-        ...(options.p2 ? { p2: options.p2 } : {}),recoverToolErrors:options.answerPolicy==='workbench-v1',preferredSection:()=>getHarness().workbench?abstractReadingSection(getHarness().input):undefined,
+        ...(options.p2 ? { p2: options.p2 } : {}),workbench:options.answerPolicy==='workbench-v1',recoverToolErrors:options.answerPolicy==='workbench-v1',preferredSection:()=>getHarness().workbench?abstractReadingSection(getHarness().input):undefined,preferredContentType:()=>getHarness().workbench?scientificContentType(getHarness().input):undefined,
       }),
     });
     if (extensionsResult.errors.length || extensionsResult.extensions.some((extension) => extension.path !== MEMORY_EXTENSION || options.p2?.executionVersion !== "full-v1" ||
@@ -264,37 +289,56 @@ export class MainPaperHarness {
   private gateway(original: StreamFn): StreamFn {
     return (model, context, options) => lazyStream(model, async () => {
       const ledger = this.activeLedger();
+      const optional=this.workbench&&['long_term_memory','turn_completion'].includes(ledger.stage);
+      const requestFailure=(code:string,error:unknown)=>{if(!optional)ledger.fail(code,error);};
+      const finalOnly = this.options.p2 && ledger.phase === "agent" && ["generate", "closing", "citation_repair"].includes(ledger.stage);
+      const project=(value:TranscriptContext)=>{const projected=finalOnly?normalizeContext({messages:withoutToolDeclarations(this.workbench?groundedGenerationMessages(value.messages,message=>message.role==='assistant'&&this.finalAnswers.has(assistantSignature(message))):value.messages)}):value;return this.workbench?currentProviderContext(projected):projected;};
+      let providerContext=project(context);
+      const requestedTokens=options?.maxTokens??(this.full?this.options.p2?.stageOutputLimits?.generation??4096:4096);
+      let capacity=this.workbench?requestCapacity(estimateVisibleContext(providerContext),model.contextWindow,requestedTokens,model.maxTokens):undefined;
+      if(capacity&&!capacity.fits&&ledger.phase==='agent'&&this.compactContext('capacity',context.messages)){
+        providerContext=project(normalizeContext({...this.contextInput(normalizeContext({messages:convertToLlm(this.session.messages)}).messages),tools:this.session.agent.state.tools.slice()}));
+        capacity=requestCapacity(estimateVisibleContext(providerContext),model.contextWindow,requestedTokens,model.maxTokens);
+      }
       const request = ledger.beginRequest(model);
       if (!request.admitted) throw new RuntimeFailure(ledger.failureCode ?? "BUDGET_EXCEEDED", request.error ?? "Turn stopped before model request");
       // Enforce the final payload boundary after every Pi/provider projection as well.
-      const finalOnly = this.options.p2 && request.phase === "agent" && ["generate", "closing", "citation_repair"].includes(request.stage ?? "");
-      const finalMessages=finalOnly&&this.workbench?groundedGenerationMessages(context.messages,message=>message.role==='assistant'&&this.finalAnswers.has(assistantSignature(message))):context.messages;
-      const providerContext = finalOnly ? normalizeContext({ messages: withoutToolDeclarations(finalMessages) }) : context;
       request.tool_context = [...toolContextEvidence(providerContext), ...(this.r2 ? this.hostEvidence.proof(providerContext) : [])];
       if (this.full && request.phase === "agent") this.lastMainEvidence = this.r2Evidence(providerContext);
       if (this.options.authorizeRequest) {
         try { await this.options.authorizeRequest(request); }
-        catch (error) { request.status = "error"; request.error = ledger.errorText(error); ledger.fail("INVALID_AUTHORIZATION", error); throw error; }
+        catch (error) { request.status = "error"; request.error = ledger.errorText(error); requestFailure("INVALID_AUTHORIZATION", error); throw error; }
       }
       const started = Date.now();
       if(this.workbench&&request.phase==='agent')this.contextTracker.request(traceInput(providerContext,'sdk_context',this.options.secrets),request.stage??'agent');
-      if(this.options.onExecutionEvent)this.trace({id:request.request_id,kind:"model",status:"running",stage:request.stage??"agent",phase:request.phase,input:traceInput(providerContext,"sdk_context",this.options.secrets)});
+      if(this.options.onExecutionEvent||this.tasks)this.trace({id:request.request_id,kind:"model",status:"running",stage:request.stage??"agent",phase:request.phase,input:traceInput(providerContext,"sdk_context",this.options.secrets)});
       const timeout = AbortSignal.timeout(this.options.requestTimeoutMs ?? 90_000);
       const signals = [options?.signal, this.turnController?.signal, timeout].filter((item): item is AbortSignal => item !== undefined);
       const signal = AbortSignal.any(signals);
       const nativeFetch = globalThis.fetch;
       try {
+        if(capacity&&capacity.max_output_tokens<Math.min(256,capacity.requested_output_tokens))throw new RuntimeFailure('CONTEXT_CAPACITY','当前输入已占满可用上下文，无法为回答保留足够空间；请缩短问题或减少本轮论文范围。');
         const response = await original(model, providerContext, {
           ...options, signal, maxRetries: 0, transport: "sse", timeoutMs: this.options.requestTimeoutMs ?? 90_000,
-          // Preserve native compaction's token allocation and context.
-          maxTokens: options?.maxTokens ?? (this.full ? this.options.p2?.stageOutputLimits?.generation ?? 4096 : 4096),
+          // Leave room for the actual request's output and serialization overhead.
+          maxTokens: capacity?.max_output_tokens??requestedTokens,
           fetch: async (input, init) => {
             if (this.full && request.http_attempts >= 1) {
               const failure = new RuntimeFailure("PROVIDER_RETRY_BLOCKED", "Provider retry is disabled; one admitted attempt cannot dispatch a second HTTP request");
-              ledger.fail(failure.code, failure); throw failure;
+              requestFailure(failure.code, failure); throw failure;
+            }
+            let payload:Record<string,unknown>|undefined;
+            if(typeof init?.body==='string')try{const parsed=JSON.parse(init.body);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))payload=parsed;}catch{/* Non-JSON transports retain the SDK projection. */}
+            if(payload){
+              if(this.workbench){
+                const key=['max_completion_tokens','max_tokens','max_output_tokens'].find(key=>typeof payload![key]==='number');
+                const checked=requestCapacity(estimateVisibleContext(traceInput(payload,'provider_payload')),model.contextWindow,capacity!.max_output_tokens,model.maxTokens);
+                if(checked.max_output_tokens<Math.min(256,checked.requested_output_tokens))throw new RuntimeFailure('CONTEXT_CAPACITY','当前输入已占满可用上下文，无法为回答保留足够空间；请缩短问题或减少本轮论文范围。');
+                if(key&&(checked.max_output_tokens<Number(payload[key])||Number(payload[key])<Math.min(256,checked.requested_output_tokens))){payload[key]=checked.max_output_tokens;init={...init,body:JSON.stringify(payload)};}
+              }
+              const input=traceInput(payload,'provider_payload',this.options.secrets);if(this.workbench&&request.phase==='agent')this.contextTracker.request(input,request.stage??'agent');if(this.options.onExecutionEvent||this.tasks)this.trace({id:request.request_id,kind:'model',status:'running',stage:request.stage??'agent',phase:request.phase,input});
             }
             request.http_attempts++;
-            if(typeof init?.body==="string")try{const input=traceInput(JSON.parse(init.body),'provider_payload',this.options.secrets);if(this.workbench&&request.phase==='agent')this.contextTracker.request(input,request.stage??'agent');if(this.options.onExecutionEvent)this.trace({id:request.request_id,kind:"model",status:"running",stage:request.stage??"agent",phase:request.phase,input});}catch{/* Non-JSON transports retain the SDK projection. */}
             return nativeFetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal });
           },
           onResponse: async (response, requestModel) => {
@@ -307,14 +351,15 @@ export class MainPaperHarness {
           },
         });
         const completion = response.result().then((message) => {
-          if (timeout.aborted) ledger.fail("REQUEST_TIMEOUT", new RuntimeFailure("REQUEST_TIMEOUT", "Model request timed out"));
-          ledger.endRequest(request, message, started);
+          if (timeout.aborted) requestFailure("REQUEST_TIMEOUT", new RuntimeFailure("REQUEST_TIMEOUT", "Model request timed out"));
+          if(optional&&['error','aborted'].includes(message.stopReason)){request.status='error';request.elapsed_ms=Date.now()-started;request.error=message.errorMessage??'Memory synthesis unavailable';}
+          else ledger.endRequest(request, message, started);
           if(this.workbench&&request.phase==='agent'&&!['error','aborted'].includes(message.stopReason))this.contextTracker.response(request.usage,request.stage??'agent');
-          if(this.options.onExecutionEvent)this.trace({id:request.request_id,kind:"model",status:["error","aborted"].includes(message.stopReason)?"error":"completed",stage:request.stage??"agent",phase:request.phase,output:traceOutput(message,this.options.secrets),elapsed_ms:Date.now()-started});
+          if(this.options.onExecutionEvent||this.tasks)this.trace({id:request.request_id,kind:"model",status:["error","aborted"].includes(message.stopReason)?"error":"completed",stage:request.stage??"agent",phase:request.phase,output:traceOutput(message,this.options.secrets),elapsed_ms:Date.now()-started});
           if (request.phase === "agent") this.lastMainRequest = request;
         }).catch((error: unknown) => {
           request.status = "error"; request.elapsed_ms = Date.now() - started;
-          request.error = errorText(error, this.options.secrets); ledger.fail("MODEL_ERROR", error);
+          request.error = errorText(error, this.options.secrets); requestFailure(error instanceof RuntimeFailure?error.code:"MODEL_ERROR", error);
           this.trace({id:request.request_id,kind:"model",status:"error",stage:request.stage??"agent",phase:request.phase,elapsed_ms:Date.now()-started});
         });
         this.pendingRequests.add(completion);
@@ -322,7 +367,7 @@ export class MainPaperHarness {
         return response;
       } catch (error) {
         request.status = "error"; request.elapsed_ms = Date.now() - started;
-        request.error = errorText(error, this.options.secrets); ledger.fail("MODEL_ERROR", error);
+        request.error = errorText(error, this.options.secrets); requestFailure(error instanceof RuntimeFailure?error.code:"MODEL_ERROR", error);
         this.trace({id:request.request_id,kind:"model",status:"error",stage:request.stage??"agent",phase:request.phase,elapsed_ms:Date.now()-started});
         throw error;
       }
@@ -368,6 +413,55 @@ export class MainPaperHarness {
     this.session.setActiveToolsByName(this.availableTools());
   }
 
+  private comparisonWindow():Chunk[]{return this.comparison?.window(Math.min(48_000,Math.max(4000,Math.floor(this.options.model.contextWindow*1.2)) ))??[];}
+  private comparisonMessages(messages:Message[]):Message[]{
+    if(!this.comparison||this.contextIdle)return messages;
+    const chunks=this.comparisonWindow(),ids=JSON.stringify(chunks.map(chunk=>chunk.chunk_id));
+    if(!this.comparisonProjection||this.comparisonProjection.ids!==ids)this.comparisonProjection={ids,message:this.hostEvidence.projection(chunks)};
+    // Raw tool outputs remain in the native session and execution detail. The provider
+    // receives one deduplicated, source-validated evidence workspace shared by all papers.
+    return [...messages.map(message=>{
+      let source=message.role==='toolResult'&&message.toolName==='retrieve_chunks'&&this.comparisonCalls.has(message.toolCallId)&&!message.isError;
+      if(message.role==='user')for(const block of typeof message.content==='string'?[{type:'text',text:message.content}]:message.content){
+        if(block.type==='text')try{const envelope=JSON.parse(block.text);if(envelope.source==='pipaper_host_evidence'&&this.comparisonCalls.has(envelope.tool_call_id))source=true;}catch{/* Ordinary user text is retained. */}
+      }
+      return source?{...message,content:[{type:'text' as const,text:JSON.stringify({source:'comparison_workspace',note:'Exact deduplicated excerpts follow in the evidence workspace; consult them for copyable citations.'})}]} as Message:message;
+    }),this.comparisonProjection.message,{role:'user',content:[{type:'text',text:JSON.stringify({source:'pipaper_host_evidence_window',...this.comparison.windowInfo(chunks),note:'Counts describe this request only. Omitted excerpts remain archived but are not visible evidence. Do not infer full coverage from the archive count.'})}],timestamp:Date.now()}];
+  }
+  private async advanceComparison(output:string,signal?:AbortSignal,hasToolCalls=false):Promise<AgentTurnDecision>{
+    const ledger=this.activeLedger(),comparison=this.comparison!;
+    if(output&&this.workbench){
+      const candidate=prepareWorkbenchAnswer(output,{evidence:this.lastMainEvidence,expectedKind:'paper_fact',allowAnswer:comparison.complete,requiredPapers:this.selectedRequired,truncated:this.workbenchTruncated,papers:this.options.p2?.publicPapers});
+      if(candidate&&candidate.execution?.state!=='working'&&candidate.visibleCitationCount&&!this.citations(candidate.value.answer,this.lastMainRequest).unknown_ids.length&&preferWorkbenchAnswer(this.workbenchBest?.answer,candidate)===candidate)this.workbenchBest={answer:candidate,request:this.lastMainRequest,evidence:new Map(this.lastMainEvidence)};
+    }
+    const execution=executionFromOutput(output);
+    if(!hasToolCalls&&!comparison.baselineMissing.length&&execution&&execution.state!=='working'){
+      comparison.stopReason='已形成可交付回答';ledger.record.comparison=comparison.report();return this.finishWorkbenchStep(output,signal);
+    }
+    if(output)ledger.record.internal_drafts!.push(output);
+    comparison.noteTurnProgress(this.comparisonProgress.chunks,this.comparisonProgress.attempts);
+    this.comparisonProgress=comparison.counts;
+    if(comparison.stalled&&comparison.baselineMissing.length&&ledger.remainingRequests>=3){
+      // A non-cooperating model cannot silently drop selected papers. Real host calls
+      // supply the remaining baseline, marked host_plan in the existing trace.
+      const allowance=ledger.toolLimit('retrieve_chunks')-ledger.toolCount('retrieve_chunks');
+      const queries=comparison.queriesForGaps().slice(0,allowance);
+      if(queries.length){await this.hostBatch(queries,'compare_baseline_fallback',this.lastMainRequest?.request_id??'',signal);comparison.noteTurnProgress(this.comparisonProgress.chunks,this.comparisonProgress.attempts);this.comparisonProgress=comparison.counts;}
+    }
+    if(!comparison.baselineMissing.length&&comparison.hasUncheckedEvidence&&comparison.checks<comparison.budget.checks&&ledger.remainingRequests>=3){
+      const chunks=this.comparisonWindow(),visible=new Map(chunks.map(chunk=>[chunk.chunk_id,chunk]));
+      try{await this.structured('comparison_check',COMPARISON_CHECK_INSTRUCTION+'\nWorkspace: '+JSON.stringify(comparison.report()),[this.hostEvidence.projection(chunks)],json=>{
+        comparison.applyCheck(stageObject(json),visible);this.tasks?.comparison(comparison.report());return comparison.report();
+      },signal);}
+      catch(error){if(ledger.mustStop)throw error;comparison.checkFailed();this.audit('comparison_check',ledger.errorText(error))('comparison_check_unavailable');}
+    }
+    const stop=comparison.complete?'所需比较维度已有相关证据':ledger.remainingRequests<=2?'保留最终回答请求':ledger.toolCount('retrieve_chunks')>=ledger.toolLimit('retrieve_chunks')?'已达到本轮检索上限':comparison.stalled?'连续查找没有获得新证据':comparison.checks>=comparison.budget.checks?'已完成基础取证及两轮缺项补查':null;
+    if(stop){comparison.stopReason=stop;this.enterClosing(stop,'generate');}
+    else {ledger.phase='agent';ledger.stage=comparison.baselineMissing.length?'compare_retrieve':'compare_supplement';this.batchReservations=0;this.session.setActiveToolsByName(this.availableTools());}
+    ledger.record.comparison=comparison.report();
+    return {action:'continue'};
+  }
+
   private installP2Hooks(): void {
     const agent = this.session.agent;
     const previousPrepare = agent.prepareRequest;
@@ -401,9 +495,20 @@ export class MainPaperHarness {
         return { block: true, reason: error.message };
       }
       try {
-        validatePaperParams(context.toolCall.name, context.args, { knownPaperIds: this.options.knownPaperIds, getLedger: () => ledger, getScope: () => this.scope,p2:this.options.p2,preferredSection:()=>this.workbench?abstractReadingSection(this.input):undefined });
+        validatePaperParams(context.toolCall.name, context.args, { knownPaperIds: this.options.knownPaperIds, getLedger: () => ledger, getScope: () => this.scope,p2:this.options.p2,workbench:this.workbench,preferredSection:()=>this.workbench?abstractReadingSection(this.input):undefined });
       } catch (error) { ledger.rejectTool(id, error); return { block: true, reason: ledger.errorText(error) }; }
-      if (this.options.p2?.profile === "B" && context.toolCall.name === "retrieve_chunks" && this.batchReservations >= 2) {
+      if(this.comparison&&context.toolCall.name==='retrieve_chunks'){
+        const args=context.args as {paper_ids:string[];query?:string;section?:string;content_type?:string;offset?:number};
+        this.comparisonCalls.set(id,{paper_ids:[...args.paper_ids],query:args.query??'Read the original abstract'});
+        const missing=this.comparison.baselineMissing;
+        if(args.paper_ids.some(paper=>!this.comparison!.papers.includes(paper))||missing.length&&!args.paper_ids.some(paper=>missing.includes(paper))){
+          const error=new Error(`First retrieve the required papers without baseline evidence: ${JSON.stringify(missing)}. Keep every comparison target and use the existing workspace for papers already read.`);ledger.rejectTool(id,error);return {block:true,reason:error.message};
+        }
+        if(!this.comparison.claimQuery(args.query??'Read the original abstract',args.paper_ids,{section:args.section,content_type:args.content_type??scientificContentType(this.input),offset:args.offset})){
+          const error=new Error('This query and paper scope were already retrieved. Reuse the evidence workspace or search a missing dimension with a different query.');ledger.rejectTool(id,error);return {block:true,reason:error.message};
+        }
+      }
+      if (!this.comparison&&this.options.p2?.profile === "B" && context.toolCall.name === "retrieve_chunks" && this.batchReservations >= 2) {
         const entry = ledger.record.tools.findLast((item) => item.tool_call_id === id);
         if (entry) { entry.status = "budget_rejected"; entry.error = "Current retrieval batch permits at most two executions"; }
         return { block: true, reason: "Current retrieval batch permits at most two executions" };
@@ -422,6 +527,11 @@ export class MainPaperHarness {
       const toolCalls = turn.message.content.filter((block) => block.type === "toolCall");
       const output = turn.message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
       this.workbenchTruncated=turn.message.stopReason==='length';
+      if(this.comparison&&!ledger.closing){
+        try{return await this.advanceComparison(output,signal,toolCalls.length>0);}
+        catch(error){if(ledger.mustStop)return {action:'end'};this.audit('comparison_check',ledger.errorText(error))('comparison_check_unavailable');this.enterClosing('Finish the comparison with the available excerpts and identify remaining gaps','generate');return {action:'continue'};}
+      }
+      if(this.workbench&&!toolCalls.length)return this.finishWorkbenchStep(output,signal);
       if(this.workbench&&!this.useReflect&&!ledger.closing){
         if(!toolCalls.length)return this.finishAnswer(output);
         if(output)ledger.record.internal_drafts!.push(output);
@@ -538,19 +648,21 @@ export class MainPaperHarness {
     }
   }
 
-  private finishWorkbenchAnswer(output:string):AgentTurnDecision{
+  private captureWorkbenchAnswer(output:string):WorkbenchAnswer|null{
     const ledger=this.activeLedger(),intent=(this.frame as FullFrame|undefined)?.intent;
-    const expectedKind=intent&&!this.autonomousPreparation?intent==='session_control'?'session_control':intent==='paper_discovery'?'catalog':'paper_fact':undefined;
+    const expectedKind=this.currentExecution?.needs_sources?'paper_fact':this.workbench&&isMemorySessionInput(this.input)?'session_control':intent&&!this.autonomousPreparation?intent==='session_control'?'session_control':intent==='paper_discovery'?'catalog':'paper_fact':undefined;
     const candidate=prepareWorkbenchAnswer(output,{evidence:this.lastMainEvidence,expectedKind,
-      allowAnswer:!this.check?.checks.some(need=>need.status!=='supported'),requiredPapers:this.selectedRequired,papers:this.options.p2?.publicPapers,truncated:this.workbenchTruncated});
-    if(!candidate)throw new RuntimeFailure('ANSWER_SCHEMA_ERROR','The model returned no readable answer text');
+      allowAnswer:!this.check?.checks.some(need=>need.status!=='supported')&&(!this.comparison||this.comparison.complete),requiredPapers:this.selectedRequired,papers:this.options.p2?.publicPapers,truncated:this.workbenchTruncated,execution:this.currentExecution});
+    if(!candidate)return null;
     const chosen=preferWorkbenchAnswer(this.workbenchBest?.answer,candidate);
     if(chosen===candidate)this.workbenchBest={answer:candidate,request:this.lastMainRequest,evidence:new Map(this.lastMainEvidence)};
     for(const kind of candidate.adaptations)this.audit('final_answer',output)(kind);
-    if(candidate.pendingAction&&!this.workbenchContinuationUsed&&ledger.remainingRequests>=1){
-      this.workbenchContinuationUsed=true;ledger.record.internal_drafts!.push(output);
-      this.continueWorkbenchGeneration();return {action:'continue'};
-    }
+    return candidate;
+  }
+
+  private finishWorkbenchAnswer(output:string):AgentTurnDecision{
+    const ledger=this.activeLedger(),candidate=this.captureWorkbenchAnswer(output);
+    if(!candidate){if(this.workbenchBest)return this.acceptWorkbenchAnswer();throw new RuntimeFailure('ANSWER_SCHEMA_ERROR','The model returned no readable answer text');}
     if(candidate.needsCitationRepair&&!this.generationRepair&&ledger.remainingRequests>=1){
       const error=`Citation attribution problems: ${JSON.stringify(candidate.citationIssues)}. Check the actual source of EACH factual statement and numeric result, not merely whether a chunk ID exists. Never use an unrelated paragraph from the same paper. Preserve supported content; remove unsupported reported numbers or clearly state the gap. A corrected citation must support the actual claim; matching a number alone is insufficient.`;
       (ledger.record.generation_failures??=[]).push({code:'INVALID_CITATION',error,response_text:Array.from(output).slice(0,16000).join(''),request_id:this.lastMainRequest?.request_id??null});
@@ -559,18 +671,75 @@ export class MainPaperHarness {
     return this.acceptWorkbenchAnswer();
   }
 
+  private async completionCheck(output:string,signal?:AbortSignal):Promise<TurnExecution|undefined>{
+    const ledger=this.activeLedger();
+    if(this.options.completionPolicy!=='turn-state-v1'||this.completionChecks>=2||ledger.remainingRequests<=1||ledger.mustStop)return;
+    this.completionChecks++;
+    const oldPhase=ledger.phase,oldStage=ledger.stage;
+    const payload={original_question:this.input,dialogue:this.dialogue.slice(-3).map(turn=>({question:turn.user_text,answer:turn.final_answer})),
+      requirements:this.frame?.information_needs??[],task_goals:this.tasks?.goals()??[],selected_papers:this.selectedRequired,
+      candidate:output,visible_sources:[...this.lastMainEvidence.values()].map(source=>({paper_id:source.paper_id,chunk_id:source.chunk_id})),
+      tool_results:ledger.record.tools.map(tool=>({tool:tool.tool_name,status:tool.status,executed:tool.executed,paper_ids:tool.paper_ids,chunks:tool.chunk_ids,error:tool.error})),
+      closing:ledger.closing,remaining_requests:ledger.remainingRequests};
+    const context=normalizeContext({messages:[{role:'system',content:COMPLETION_CHECK_INSTRUCTION+'\n'+GOAL_PROGRESS_INSTRUCTION,timestamp:Date.now()},
+      {role:'user',content:[{type:'text',text:JSON.stringify(payload)}],timestamp:Date.now()}]});
+    const maxTokens=Math.min(768,this.options.model.maxTokens);
+    if(!requestCapacity(estimateVisibleContext(context),this.options.model.contextWindow,maxTokens,this.options.model.maxTokens).fits)return;
+    try{
+      ledger.phase='auxiliary';ledger.stage='turn_completion';
+      const response=await this.session.agent.streamFunction(this.options.model,context,{maxTokens,signal:AbortSignal.any([AbortSignal.timeout(15_000),...(signal?[signal]:[])]),
+        ...(this.options.model.reasoning&&this.options.thinkingLevel!=='off'?{reasoning:this.options.thinkingLevel??'low'}:{})});
+      const result=await response.result();await Promise.allSettled([...this.pendingRequests]);
+      if(['error','aborted','length'].includes(result.stopReason)||result.content.some(block=>block.type==='toolCall'))return;
+      return parseTurnExecution(stageObject(result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')),'completion_check');
+    }catch{return;}
+    finally{ledger.phase=oldPhase;ledger.stage=oldStage;}
+  }
+
+  private async finishWorkbenchStep(output:string,signal?:AbortSignal):Promise<AgentTurnDecision>{
+    const ledger=this.activeLedger(),intent=(this.frame as FullFrame|undefined)?.intent;
+    const preview=prepareWorkbenchAnswer(output,{evidence:this.lastMainEvidence,allowAnswer:true,expectedKind:isMemorySessionInput(this.input)||intent==='session_control'?'session_control':intent==='paper_discovery'?'catalog':undefined});
+    let declared=executionFromOutput(output)??await this.completionCheck(output,signal);
+    if(!declared)declared={state:preview?.value.status==='clarification'?'clarification':preview?.value.status==='partial'?'partial':'complete',remaining_needs:[],needs_sources:false,origin:'host'};
+    if(preview?.value.status==='refusal'||preview?.value.status==='clarification')declared={...declared,needs_sources:false,state:preview.value.status==='clarification'?'clarification':declared.state};
+    if(!preview)declared={...declared,state:'working',remaining_needs:['形成当前问题的可读回答']};
+    const tools=ledger.record.tools,retrievals=tools.filter(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed),canContinue=!ledger.closing&&ledger.remainingRequests>=1&&this.availableTools().length>0;
+    this.currentExecution=this.executionTracker.decide(declared,{progress_key:JSON.stringify({completed:tools.filter(tool=>tool.status==='completed').map(tool=>tool.tool_call_id).sort(),sources:[...this.lastMainEvidence.keys()].sort()}),
+      source_count:this.lastMainEvidence.size,retrieval_attempts:retrievals.length,successful_retrievals:retrievals.filter(tool=>tool.status==='completed').length,running_tools:tools.filter(tool=>tool.status==='running').length,can_continue:canContinue});
+    ledger.record.execution=this.currentExecution;
+    this.tasks?.update(this.currentExecution.goal_updates,this.lastMainEvidence,this.currentExecution.needs_sources!==false);
+    if(this.comparison)this.tasks?.comparison(this.comparison.report());
+    if(this.currentExecution.state==='working'){
+      if(output){ledger.record.internal_drafts!.push(output);this.captureWorkbenchAnswer(output);}
+      this.continueWorkbenchGeneration();return {action:'continue'};
+    }
+    if(this.currentExecution.stop_reason&&this.workbenchBest&&this.workbenchBest.answer.execution?.state!=='complete'){
+      const best=this.workbenchBest.answer;
+      this.workbenchBest.answer={...best,execution:this.currentExecution,value:{...best.value,status:'partial',answer:best.value.answer+'\n\n本轮仍有未完成任务，已保留当前回答。'}};
+    }
+    if(!preview){if(this.workbenchBest)return this.acceptWorkbenchAnswer();return this.finishWorkbenchAnswer('本轮暂未形成可读回答，可查看实际执行记录后继续提问。');}
+    return this.finishAnswer(output);
+  }
+
   private acceptWorkbenchAnswer():AgentTurnDecision{
     const best=this.workbenchBest!;const ledger=this.activeLedger();this.lastMainRequest=best.request;this.lastMainEvidence=new Map(best.evidence);
     ledger.record.final_request_id=best.request?.request_id??null;ledger.record.final_structure=best.answer.value;ledger.record.business_status=best.answer.value.status;
     ledger.record.citation_attribution=best.answer.attribution;
+    ledger.record.execution=best.answer.execution??this.currentExecution;
     this.answer=best.answer.value.answer;ledger.record.citation_validity=this.citations(this.answer,best.request);
+    this.answerStreamer.commit(best.request?.request_id??'final',this.answer,[...best.evidence.keys()]);
     if(this.generationRepair)ledger.record.citation_corrections!.push({original_answer:this.generationRepair.original,corrected_answer:this.answer,request_id:best.request?.request_id??null});
     return {action:'end'};
   }
 
-  private stageInstruction(): string {
+  private stageInstruction():string{
+    const goals=this.tasks?.goals();
+    return this.baseStageInstruction()+(goals?.length?'\n'+GOAL_PROGRESS_INSTRUCTION+'\nTask goals: '+JSON.stringify(goals):'');
+  }
+  private baseStageInstruction(): string {
     const ledger = this.activeLedger();
-    if(this.workbench&&!this.useReflect&&!ledger.closing)return `${this.finalInstruction}\nUse the active tools whenever the current excerpts do not yet answer the complete original question. A first retrieval is not a requirement to stop. Make actual tool calls for additional lookup, then explain the results; do not end the reply with an announcement of a future action. Answer directly when the question is already answered, and state real evidence gaps when further lookup is unavailable. No separate Reflect step is required. ${this.workbenchContinuationUsed?'The previous reply only announced another lookup. Execute that lookup through a real tool call now, or clearly state the remaining gap instead of repeating the announcement.':''} ${this.frame?`QuestionFrame (fallible hint): ${JSON.stringify(this.frame)}. Preserve the actual original question and conversation.`:''}`;
+    if(this.comparison&&!this.generationRepair&&!this.citationRepair)return this.finalInstruction+'\n'+this.comparison.instruction(ledger.closing,this.options.p2?.publicPapers)+`\nRemaining allowance: ${ledger.remainingRequests} model requests and ${ledger.toolLimit('retrieve_chunks')-ledger.toolCount('retrieve_chunks')} retrieve_chunks executions. Reserve the final answer; an allowance is a ceiling, not a target.`;
+    if(this.workbench&&!this.useReflect&&!ledger.closing)return `${this.finalInstruction}\nUse the active tools whenever the current excerpts do not yet answer the complete original question. A first retrieval is not a requirement to stop. Make actual tool calls for additional lookup, then explain the results; do not end the reply with an announcement of a future action. Answer directly when the question is already answered, and state real evidence gaps when further lookup is unavailable. No separate Reflect step is required. ${this.currentExecution?`Host task state: ${JSON.stringify(this.currentExecution)}. Resolve the remaining needs through actual actions, or give a bounded partial answer if they cannot be resolved.`:''} ${this.frame?`QuestionFrame (fallible hint): ${JSON.stringify(this.frame)}. Preserve the actual original question and conversation.`:''}`;
     if (this.generationRepair) return `${this.finalInstruction}\nOne final correction only. ${this.generationRepair.error}\nAllowed citation IDs: ${JSON.stringify([...this.lastMainEvidence.keys()])}. Original failed response: ${this.generationRepair.original}\nDo not retrieve or invent support. Supported factual answer/partial must cite visible evidence. ${this.workbench?'Preserve useful supported explanations. For an unsupported detail, omit that detail or state the bounded evidence gap; do not turn an otherwise useful answer into a blanket refusal.':'If support is unavailable, withdraw unsupported claims and give a clear refusal or necessary clarification; these do not need fabricated citations.'}`;
     if (this.citationRepair) return `Host citation correction, one attempt only. Do not retrieve or delete citations to conceal an invalid answer.
 Correct only citation format/source availability using the actually visible excerpts. Invalid IDs: ${JSON.stringify(this.citationRepair.invalid)}.
@@ -610,9 +779,9 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       const entry = ledger.beginTool("retrieve_chunks", id, "start");
       entry.execution_source = "host_plan"; entry.plan_request_id = planRequestId; entry.model_request_id = null;
       const section=this.workbench?abstractReadingSection(this.input,query.query):undefined;
-      const toolCall = { type: "toolCall" as const, id, name: "retrieve_chunks", arguments: { query: query.query, paper_ids: query.paper_ids, top_k: 5,...(section?{section}:{}) } };
+      const toolCall = { type: "toolCall" as const, id, name: "retrieve_chunks", arguments: { query: query.query, paper_ids: query.paper_ids, top_k: this.workbench?8:5,...(section?{section}:{}),...(this.workbench&&scientificContentType(this.input)?{content_type:scientificContentType(this.input)}:{}) } };
       const toolStarted=Date.now();
-      if(this.options.onExecutionEvent)this.trace({id,kind:"tool",status:"running",stage,phase:ledger.phase,parent_id:planRequestId,origin:"host_plan",tool:"retrieve_chunks",input:toolCall.arguments});
+      if(this.options.onExecutionEvent||this.tasks)this.trace({id,kind:"tool",status:"running",stage,phase:ledger.phase,parent_id:planRequestId,origin:"host_plan",tool:"retrieve_chunks",input:toolCall.arguments});
       // runToolCall requires a caller-message carrier for hooks. It is not a provider response:
       // no usage is fabricated, no assistant event is emitted, and this carrier is never persisted.
       const caller = { role: "assistant", content: [toolCall], timestamp: Date.now() } as unknown as AssistantMessage;
@@ -622,9 +791,10 @@ Complete this retrieval batch through the declared tools. If separate queries ar
         tools: this.session.agent.state.tools, beforeToolCall: this.session.agent.beforeToolCall, afterToolCall: this.session.agent.afterToolCall,
         signal: AbortSignal.any(signals) });
       ledger.endTool(id, outcome.isError);
-      if(this.options.onExecutionEvent)this.trace({id,kind:"tool",status:outcome.isError?"error":"completed",stage,phase:ledger.phase,parent_id:planRequestId,origin:"host_plan",tool:"retrieve_chunks",output:traceOutput(outcome.result,this.options.secrets),elapsed_ms:Date.now()-toolStarted});
+      if(this.options.onExecutionEvent||this.tasks)this.trace({id,kind:"tool",status:outcome.isError?"error":"completed",stage,phase:ledger.phase,parent_id:planRequestId,origin:"host_plan",tool:"retrieve_chunks",output:traceOutput(outcome.result,this.options.secrets),elapsed_ms:Date.now()-toolStarted});
       if (outcome.isError) {
         if (entry.status === "budget_rejected" || entry.status === "rejected") continue;
+        if(this.comparison)this.comparison.observe(query.paper_ids,[],true);
         if(this.workbench&&!ledger.mustStop){
           const errorText=outcome.result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n');
           this.audit(stage,errorText)('individual_retrieval_failure_retained');
@@ -636,6 +806,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       if (ledger.mustStop) throw new RuntimeFailure(ledger.failureCode ?? "TOOL_ERROR", "Host planned tool execution failed");
       const content = outcome.result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
       const result = JSON.parse(content) as RetrieveResult;
+      if(this.comparison)this.comparison.observe(query.paper_ids,result.chunks);
       const text = this.hostEvidence.envelope(id, result);
       if (this.full && this.session.isStreaming) {
         // Called from finishTurn AFTER the caller's real tool results. Pi's
@@ -700,17 +871,27 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     if (ledger.mustStop || ledger.remainingRequests < (this.useReflect&&!this.workbench ? 3 : 2)) throw new RuntimeFailure("BUDGET_EXCEEDED", "C must reserve its configured closing requests");
     const context: PreparationContext = { original: this.input, allowed: this.allowed(), publicPapers: this.options.p2!.publicPapers,
       frameId: `${ledger.record.user_turn_id}/question_preparation`, history: this.dialogue.filter(turn => turn.turn_id !== ledger.record.user_turn_id),
-      activeConstraints: this.memory.activeConstraints(),preferResolvedPaper:this.workbench, priorObjects: { targets: this.memory.state.comparison_order.length ? this.memory.state.comparison_order : this.memory.state.current_paper ? [this.memory.state.current_paper.paper_id] : [], comparison_dimensions: this.memory.state.comparison_dimensions } };
+      activeConstraints: this.memory.activeConstraints(),preferResolvedPaper:this.workbench,personalMemory:this.workbench,...(this.comparison?{targetLimit:Math.max(4,this.selectedRequired.length)}:{}), priorObjects: { targets: this.memory.state.comparison_order.length ? this.memory.state.comparison_order : this.memory.state.current_paper ? [this.memory.state.current_paper.paper_id] : [], comparison_dimensions: this.memory.state.comparison_dimensions } };
     const summaries = this.session.sessionManager.getBranch().filter(entry => entry.type === "compaction");
     const nativeSummary = summaries.at(-1);
     try {
       ledger.phase = "auxiliary"; ledger.stage = "question_preparation";
-      const payload = preparationPayload(context, this.memory.projection(), nativeSummary?.type === "compaction" ? nativeSummary.summary : undefined);
-      const messages = normalizeContext({ messages: [{ role: "system", content: QUESTION_PREPARATION_INSTRUCTION+(this.workbench?'\nExplaining, translating or summarizing an abstract or paper content is answer/summarize, even when the user locates the paper by a title fragment. find_papers is for catalog discovery only.':'')+(this.selectedRequired.length?`\nThe user selected these papers as required objects: ${JSON.stringify(this.selectedRequired)}. Preserve ALL of them in targets; do not replace the plural question by an earlier single-paper topic. Queries must retain the original question.`:""), timestamp: Date.now() },
-        { role: "user", content: [{ type: "text", text: JSON.stringify(payload) }], timestamp: Date.now() }] });
+      let payload = preparationPayload(context, this.memory.projection(), nativeSummary?.type === "compaction" ? nativeSummary.summary : undefined,this.workbench);
+      if(this.workbench&&this.longTermMemory?.items.length){payload.long_term_memory=memoryProjection(this.longTermMemory);if(/上次|昨天|之前那篇|last paper|yesterday/iu.test(this.input)&&context.priorObjects&&!context.priorObjects.targets.length)context.priorObjects.targets=this.longTermMemory.items.filter(item=>item.kind==='reading').flatMap(item=>item.paper_ids).filter(id=>context.allowed.has(id)).slice(0,4);}
+      const instruction=QUESTION_PREPARATION_INSTRUCTION+(this.workbench?'\nExplaining, translating or summarizing an abstract or paper content is answer/summarize, even when the user locates the paper by a title fragment. find_papers is for catalog discovery only. Read history_context: excerpted or omitted history is not a complete reply. If a referenced item is not visible, preserve the original question instead of guessing its object or rewriting it as a different item.':'')+(this.comparison?`\nFor this multi-paper comparison, the target limit is ${context.targetLimit}; preserve the entire selected list and provide comparison_dimensions matching the original request.`:'')+(this.selectedRequired.length?`\nThe user selected these papers as required objects: ${JSON.stringify(this.selectedRequired)}. Preserve ALL of them in targets; do not replace the plural question by an earlier single-paper topic. Queries must retain the original question.`:"");
+      const requestMessages=(value:Record<string,unknown>)=>normalizeContext({messages:[{role:'system',content:instruction,timestamp:Date.now()},
+        {role:'user',content:[{type:'text',text:JSON.stringify(value)}],timestamp:Date.now()}]});
+      const requestedTokens=this.options.p2?.stageOutputLimits?.question_frame??4096;
+      const maxTokens=this.workbench?Math.max(1,Math.min(requestedTokens,this.options.model.maxTokens,Math.floor(this.options.model.contextWindow*.2))):requestedTokens;
+      if(this.workbench){
+        const selected=fitPreparationHistory(payload,context.history,this.input,{maxInputTokens:Math.min(compactionPolicy(this.options.model.contextWindow).threshold_tokens,requestCapacity(0,this.options.model.contextWindow,maxTokens,this.options.model.maxTokens).input_limit),measure:value=>estimateVisibleContext(requestMessages(value))});
+        payload=selected.payload;
+        if(!selected.fits)throw new RuntimeFailure('PREPARATION_CONTEXT_BUDGET','Fixed preparation input does not fit; continue with the original question without an auxiliary request');
+      }
+      const messages=requestMessages(payload);
       const response = await this.session.agent.streamFunction(this.options.model, messages, {
         ...(this.options.model.reasoning && this.options.thinkingLevel !== "off" ? { reasoning: this.options.thinkingLevel ?? "low" } : {}), signal,
-        maxTokens: this.options.p2?.stageOutputLimits?.question_frame ?? 4096 });
+        maxTokens });
       const result = await response.result();
       const requestId = ledger.record.requests.at(-1)?.request_id ?? null;
       if (ledger.mustStop || ["error", "aborted"].includes(result.stopReason)) throw new RuntimeFailure(ledger.failureCode ?? "MODEL_ERROR", "Preparation request failed");
@@ -723,11 +904,13 @@ Complete this retrieval batch through the declared tools. If separate queries ar
         if (result.stopReason === "length") throw new RuntimeFailure("STAGE_TRUNCATED", "Preparation hit its output limit; original-question fallback retained");
         if (attemptedTools.length) throw new RuntimeFailure("PREPARATION_ERROR", "Preparation requested a tool; no such tool was executed");
         const prepared = this.candidate ? parseCandidatePreparation(visible, context, this.audit("question_preparation", visible)) : parseQuestionPreparation(visible, context);
-        if(["paper_discovery","session_control"].includes(prepared.frame.intent))this.selectedRequired=[];
+        const history=payload.history_context as PreparationHistoryInfo|undefined;
+        if(this.workbench&&history&&!history.focus_complete){prepared.rewrite=this.input;prepared.routing=prepared.frame.ambiguity?'host_queries':'autonomous_discovery';prepared.frame.queries=[];prepared.warnings.push('history_reference_incomplete_original_question_retained');}
+        if(!this.comparison&&["paper_discovery","session_control"].includes(prepared.frame.intent))this.selectedRequired=[];
         if(this.selectedRequired.length){
-          prepared.frame.ordered_targets=this.selectedRequired.slice(0,4);prepared.frame.candidate_papers=[...prepared.frame.ordered_targets];prepared.frame.intent="scoped_summary";prepared.frame.ambiguity=null;
+          prepared.frame.ordered_targets=this.comparison?[...this.selectedRequired]:this.selectedRequired.slice(0,4);prepared.frame.candidate_papers=[...prepared.frame.ordered_targets];prepared.frame.intent=this.comparison?'comparison':"scoped_summary";prepared.frame.ambiguity=null;
           prepared.frame.queries=this.selectedRequired.slice(0,2).map(id=>({query:Array.from(`${this.options.p2!.publicPapers.find(p=>p.paper_id===id)?.title??id}. ${this.input}`).slice(0,1000).join(""),paper_ids:[id]}));
-          prepared.frame.information_needs.push(...this.selectedRequired.slice(0,4).map((id,i)=>({need_id:`selected_${i+1}`,text:`Address selected paper ${id} individually, or explicitly explain the source gap for this paper.`})));
+          prepared.frame.information_needs.push(...prepared.frame.ordered_targets.map((id,i)=>({need_id:`selected_${i+1}`,text:`Address selected paper ${id} individually, or explicitly explain the source gap for this paper.`})));
           prepared.rewrite=this.input;prepared.routing="host_queries";prepared.warnings.push("web_selected_scope_preserved");
         }
         this.frame = prepared.frame;
@@ -744,14 +927,23 @@ Complete this retrieval batch through the declared tools. If separate queries ar
           ...(attemptedTools.length ? { value: { unexecuted_tool_calls: attemptedTools.map(tool => ({ name: tool.name, id: tool.id, arguments_json: ledger.errorText(JSON.stringify(tool.arguments)) })) } } : {}), ...trace });
       }
     } catch (error) {
-      this.preparation = { version: PREPARATION_VERSION, status: "error", request_id: ledger.record.requests.at(-1)?.request_id ?? null,
-        reason: ledger.errorText(error), result: null };
-      throw error;
+      if(this.workbench&&error instanceof RuntimeFailure&&error.code==='PREPARATION_CONTEXT_BUDGET'){
+        this.frame=rawQuestionFrame(this.input,context.frameId);this.autonomousPreparation=true;
+        this.preparation={version:PREPARATION_VERSION,status:'fallback',request_id:null,reason:ledger.errorText(error),result:null};
+        ledger.record.stages!.push({stage:'question_preparation',status:'budget_fallback',error:ledger.errorText(error)});
+      }else{
+        this.preparation = { version: PREPARATION_VERSION, status: "error", request_id: ledger.record.requests.at(-1)?.request_id ?? null,
+          reason: ledger.errorText(error), result: null };
+        throw error;
+      }
     } finally { ledger.phase = oldPhase; ledger.stage = oldStage; }
+    if(this.workbench)this.tasks?.plan(this.input,this.frame?.information_needs??[],this.selectedRequired.length?this.selectedRequired:(this.frame as FullFrame|undefined)?.ordered_targets??[],['session_control','paper_discovery'].includes((this.frame as FullFrame|undefined)?.intent??''));
+    if(this.comparison){this.comparison.setDimensions((this.frame as FullFrame).comparison_dimensions??[]);this.tasks?.comparison(this.comparison.report());ledger.stage='compare_retrieve';this.autonomousPreparation=true;return;}
     if ((this.frame as FullFrame).intent === "session_control") {
       this.selectedRequired=[];this.autonomousPreparation=false;
       this.enterClosing("Conversation/session branch does not require paper retrieval or citations", "generate");return;
     }
+    if(this.workbench&&(this.frame as FullFrame).intent==='paper_discovery')this.autonomousPreparation=true;
     if (this.autonomousPreparation) {
       this.autonomousEvidenceBefore = new Set(this.r2Evidence().keys());
       ledger.stage = "agent";
@@ -815,7 +1007,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       : { original_question: this.input, allowed_papers: [...this.allowed()], public_catalog: catalog, ...(this.frame ? { question_frame: this.frame } : {}) };
     let correction = "";
     try {
-      for (let attempt = 0; attempt < (this.workbench&&stage.startsWith('evidence_check')?1:2); attempt++) {
+      for (let attempt = 0; attempt < (this.workbench&&(stage.startsWith('evidence_check')||stage==='comparison_check')?1:2); attempt++) {
         // Always preserve a final generation, and avoid spending the reserved last request on auxiliary work.
         if (ledger.remainingRequests <= 1 || ledger.mustStop) throw new RuntimeFailure("BUDGET_EXCEEDED", "Auxiliary stage cannot use the final generation reserve");
         ledger.phase = "auxiliary"; ledger.stage = attempt ? `${stage}_format_repair` : stage;
@@ -858,11 +1050,17 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       throw new RuntimeFailure("INVALID_SCOPE", "Declared scope must contain distinct known paper IDs");
     }
     this.scope = [...declaredScope];
-    const required=this.options.selectedScopeCoverage?selectedTargets(userText,declaredScope,this.options.p2?.publicPapers??[]):[];
+    const required=this.options.selectedScopeCoverage&&!(this.workbench&&isMemorySessionInput(userText))?selectedTargets(userText,declaredScope,this.options.p2?.publicPapers??[]):[];
     this.selectedRequired=required.length>1?required:[];
+    const adaptive=this.workbench?comparisonBudget(userText,this.selectedRequired):undefined;
+    this.comparison=adaptive?new MultiPaperComparison(userText,this.selectedRequired,adaptive):undefined;
+    this.comparisonCalls=new Map();this.comparisonProjection=undefined;this.comparisonProgress={chunks:0,attempts:0};
     this.workbenchBest=undefined;
     this.workbenchTruncated=false;
-    this.workbenchContinuationUsed=false;
+    this.answerStreamer.reset();
+    this.streamedContext=undefined;
+    this.tasks=this.workbench?new TaskProgressTracker(userText,progress=>this.options.onTaskProgress?.(JSON.parse(redactText(JSON.stringify(progress),this.options.secrets)))):undefined;
+    this.executionTracker=new TurnExecutionTracker();this.currentExecution=undefined;this.completionChecks=0;
     this.answer = "";
     this.adaptations = [];
     this.input = userText; this.frame = undefined; this.check = undefined; this.supplementUsed = false; this.batchReservations = 0;
@@ -870,10 +1068,11 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     this.autonomousEvidenceBefore = new Set();
     this.preparation = { version: PREPARATION_VERSION, status: this.options.p2?.profile === "B" ? "error" : "skipped", request_id: null,
       reason: this.options.p2?.profile === "B" ? "Preparation has not executed" : "A uses autonomous question interpretation", result: null };
+    this.memoryDigest=undefined;
     this.lastMainRequest = undefined; this.citationRepair = undefined; this.generationRepair = undefined; this.lastMainEvidence = new Map(); this.attemptedQueries = new Set();
     const memoryBefore = structuredClone(this.memory.state);
     this.turnController = new AbortController();
-    const ledger = new TurnLedger(userTurnId, declaredScope, this.options.secrets, this.options.maxRequests, this.options.maxToolCalls, Boolean(this.options.p2));
+    const ledger = new TurnLedger(userTurnId, declaredScope, this.options.secrets, adaptive?.requests??this.options.maxRequests, this.options.maxToolCalls, Boolean(this.options.p2),adaptive?{retrieve_chunks:adaptive.retrievals,search_papers:adaptive.searches}:undefined);
     if (this.options.p2) {
       ledger.record.profile = this.options.p2.profile; ledger.record.internal_drafts = []; ledger.record.stages = []; ledger.record.citation_corrections = [];
       if (this.full) ledger.record.components = { nlu: this.options.p2.profile === "B" && this.useNlu, reflect: this.options.p2.profile === "B" && this.useReflect, structured_memory: this.useDomainMemory };
@@ -911,6 +1110,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
         if (this.frame.ambiguity) this.enterClosing("QuestionFrame found unresolved ambiguity", "generate");
         else if (ledger.remainingRequests < 3) throw new RuntimeFailure("BUDGET_EXCEEDED", "B cannot reserve initial retrieval, EvidenceCheck and Generate");
       }
+      if(this.comparison&&!ledger.closing){ledger.stage='compare_retrieve';this.session.setActiveToolsByName(this.availableTools());}
       const scope = declaredScope.length ? declaredScope.join(", ") : "all corpus papers";
       promptSent = true;
       await this.session.prompt(`Host-declared paper scope for this turn: ${scope}\n\n${userText}`, { expandPromptTemplates: false });
@@ -921,9 +1121,14 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       clearTimeout(timer); signal?.removeEventListener("abort", abort);
     }
     let answer = this.full && ledger.failureCode ? `This turn could not complete (${ledger.failureCode}). The failure was retained; no further model request was made.` : this.answer;
+    const streamed=this.streamedPreview();
+    if(this.workbench&&ledger.failureCode==='CANCELLED'&&!this.workbenchBest&&streamed){
+      const preview=this.answerStreamer.snapshot(),candidate=prepareWorkbenchAnswer(preview.text,{evidence:streamed.evidence,papers:this.options.p2?.publicPapers,allowAnswer:false,execution:{state:'partial',remaining_needs:['本轮由用户停止'],stop_reason:'cancelled',origin:'host'}});
+      if(candidate)this.workbenchBest={answer:candidate,request:streamed.request,evidence:streamed.evidence};
+    }
     if(this.workbench&&ledger.failureCode){
-      if(this.workbenchBest){this.acceptWorkbenchAnswer();answer=this.answer+'\n\n本轮在完成前中断，以上已生成内容已保留。';ledger.record.final_structure={...ledger.record.final_structure!,status:'partial',answer};ledger.record.business_status='partial';}
-      else answer=ledger.failureCode.includes('TIMEOUT')?'本轮等待超时，暂未生成完整回答，可以稍后重试。':ledger.failureCode==='CANCELLED'?'本轮已停止。':ledger.failureCode==='BUDGET_EXCEEDED'?'本轮已达到请求上限，暂未生成完整回答。':'本轮未能完成回答，执行记录已保留，可查看详情后重试。';
+      if(this.workbenchBest){this.acceptWorkbenchAnswer();answer=this.answer+(ledger.failureCode==='CANCELLED'?'\n\n本轮已停止，以上已生成内容已保留。':'\n\n本轮在完成前中断，以上已生成内容已保留。');ledger.record.final_structure={...ledger.record.final_structure!,status:'partial',answer};ledger.record.business_status='partial';ledger.record.execution={state:'partial',remaining_needs:[],stop_reason:ledger.failureCode==='CANCELLED'?'cancelled':'interrupted',origin:'host'};}
+      else answer=ledger.failureCode.includes('TIMEOUT')?'本轮等待超时，暂未生成完整回答，可以稍后重试。':ledger.failureCode==='CANCELLED'?'本轮已停止。':ledger.failureCode==='CONTEXT_CAPACITY'?'当前输入已占满可用上下文，无法为回答保留足够空间；请缩短问题或减少本轮论文范围。':ledger.failureCode==='BUDGET_EXCEEDED'?'本轮已达到请求上限，暂未生成完整回答。':'本轮未能完成回答，执行记录已保留，可查看详情后重试。';
     }
     const cited = this.r2 ? citationIds(answer) : [...new Set([...answer.matchAll(/\[([^\]\n]+)\]/g)].map((match) => match[1]))];
     const unknown = this.options.p2 ? this.citations(answer, this.lastMainRequest).unknown_ids
@@ -936,13 +1141,16 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       batch.executed = tools.length;
       batch.new_chunk_ids = [...new Set(tools.flatMap(tool => tool.chunk_ids))].filter(id => !this.autonomousEvidenceBefore.has(id));
     }
-    const result = ledger.finish(answer);
+    if(this.comparison)ledger.record.comparison=this.comparison.report();
     if(this.workbench&&!ledger.failureCode&&this.retainedWorkbenchAnswer()){
       const factual=this.retainedWorkbenchAnswer()!.answer.value.answer_kind==='paper_fact';
       const linked=[...new Set(cited.flatMap(id=>this.lastMainEvidence.has(id)?[this.lastMainEvidence.get(id)!.paper_id]:[]))];
       const objects=this.selectedRequired.length>1?this.selectedRequired:linked.length?linked:factual?(this.frame as FullFrame|undefined)?.ordered_targets??[]:[];
-      this.memory.rememberAnswer(userTurnId,userText,answer,objects,cited,ledger.record.business_status??'answer');
+      this.memory.rememberAnswer(userTurnId,userText,answer,objects,cited,ledger.record.business_status??'answer',ledger.record.execution?.state);
+      await this.synthesizeLongTermMemory(answer,signal);
     }
+    if(this.tasks){if(this.comparison)this.tasks.comparison(this.comparison.report());ledger.record.tasks=this.tasks.finish(ledger.record.execution,answer,cited,signal?.aborted||ledger.failureCode==='CANCELLED',Boolean(ledger.failureCode));}
+    const result = ledger.finish(answer);
     const accepted=this.retainedWorkbenchAnswer();
     if(this.workbench&&accepted&&!ledger.failureCode){
       const original=accepted.answer.original;
@@ -984,6 +1192,32 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     return JSON.parse(redactText(JSON.stringify(preparedResult), this.options.secrets)) as ControlledTurnRecord;
   }
 
+  private async synthesizeLongTermMemory(answer:string,signal?:AbortSignal):Promise<void>{
+    const ledger=this.activeLedger(),note=this.memory.state.reading_notes?.find(note=>note.source_turn===ledger.record.user_turn_id);
+    if(this.longTermMemory?.status!=='ready'||!note?.paper_ids.length||!this.lastMainEvidence.size||this.workbenchBest?.answer.execution?.state==='working'||ledger.remainingRequests<2||ledger.mustStop)return;
+    const oldPhase=ledger.phase,oldStage=ledger.stage;
+    const maxTokens=Math.min(2048,this.options.model.maxTokens),payload={question:this.input,answer:Array.from(answer).slice(0,8000).join(''),
+      papers:note.paper_ids.map(paper_id=>({paper_id,title:this.options.p2?.publicPapers.find(p=>p.paper_id===paper_id)?.title??paper_id})),
+      prior_memory:this.longTermMemory.items.filter(item=>item.kind==='reading'&&item.paper_ids.some(id=>note.paper_ids.includes(id))).map(item=>item.content),
+      sources:[...this.lastMainEvidence.values()].filter(source=>note.paper_ids.includes(source.paper_id)).slice(0,12).map(source=>({chunk_id:source.chunk_id,paper_id:source.paper_id,text:Array.from(source.text).slice(0,1000).join('')}))};
+    const context=normalizeContext({messages:[{role:'system',content:MEMORY_SYNTHESIS_INSTRUCTION,timestamp:Date.now()},
+      {role:'user',content:[{type:'text',text:JSON.stringify(payload)}],timestamp:Date.now()}]});
+    if(!requestCapacity(estimateVisibleContext(context),this.options.model.contextWindow,maxTokens,this.options.model.maxTokens).fits)return;
+    try{
+      ledger.phase='auxiliary';ledger.stage='long_term_memory';
+      const response=await this.session.agent.streamFunction(this.options.model,context,{maxTokens,
+        signal:AbortSignal.any([AbortSignal.timeout(15_000),...(signal?[signal]:[])]),
+        ...(this.options.model.reasoning&&this.options.thinkingLevel!=='off'?{reasoning:this.options.thinkingLevel??'low'}:{})});
+      const result=await response.result();await Promise.allSettled([...this.pendingRequests]);
+      if(['error','aborted','length'].includes(result.stopReason))throw new Error('Memory synthesis was incomplete');
+      const text=result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n');
+      this.memoryDigest=parseMemoryDigest(text,note.paper_ids,this.lastMainEvidence);
+      ledger.record.stages!.push({stage:'long_term_memory',status:'completed',request_id:ledger.record.requests.at(-1)?.request_id});
+    }catch{
+      ledger.record.stages!.push({stage:'long_term_memory',status:'progress_fallback',request_id:ledger.record.requests.at(-1)?.request_id});
+    }finally{ledger.phase=oldPhase;ledger.stage=oldStage;}
+  }
+
   dispose(): void { this.session.dispose(); }
 
   private get contextAutoEnabled():boolean{return this.workbench?this.options.controls.compaction==='native':this.session.autoCompactionEnabled;}
@@ -994,19 +1228,20 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       messages=normalizeContext({messages:retained,...(retained[0]?.role!=='system'?{systemPrompt:this.session.agent.state.systemPrompt,tools:this.session.agent.state.tools}:{})}).messages;
     }
     const extra=instruction??(this.ledger&&!this.contextIdle?this.stageInstruction()+'\n'+workbenchCoverageInstruction(this.selectedRequired,this.options.p2?.publicPapers??[]):'');
-    const projected=sessionContextInput(messages,this.useDomainMemory?this.memory.projection():undefined,extra);
+    const longTerm=this.workbench?memoryProjection(this.longTermMemory):undefined;
+    const projected=sessionContextInput(this.comparisonMessages(messages),this.useDomainMemory?{...this.memory.projection(),...(longTerm?{long_term_memory:longTerm}:{})}:longTerm,extra);
     if(this.contextIdle||!this.ledger?.closing)return JSON.parse(redactText(JSON.stringify(projected),this.options.secrets)) as TranscriptContext;
     const streaming=this.session.agent.state.streamingMessage;
     return JSON.parse(redactText(JSON.stringify(normalizeContext({messages:withoutToolDeclarations(groundedGenerationMessages(projected.messages,message=>message.role==='assistant'&&(this.finalAnswers.has(assistantSignature(message))||streaming?.role==='assistant'&&message.timestamp===streaming.timestamp)))})),this.options.secrets)) as TranscriptContext;
   }
   private contextSize():number{return estimateVisibleContext(this.contextInput());}
   contextView():ContextView{if(this.workbench)this.contextTracker.retain(this.contextInput());return this.contextTracker.view(this.options.model.contextWindow,this.contextAutoEnabled);}
-  private compactContext(reason:'manual'|'threshold',messages?:Message[]):boolean{
+  private compactContext(reason:'manual'|'threshold'|'capacity',messages?:Message[]):boolean{
     if(!this.workbench||!this.contextAutoEnabled)return false;
     const ledger=this.activeLedger(),input=this.contextInput(messages),before=estimateVisibleContext(input),window=this.options.model.contextWindow;
     if(reason==='threshold'&&!reachedContextThreshold(before,window))return false;
     const manager=this.session.sessionManager,signature=manager.getLeafId()+':'+before;
-    if(reason==='threshold'&&signature===this.lastContextAttempt)return false;this.lastContextAttempt=signature;
+    if(reason!=='manual'&&signature===this.lastContextAttempt)return false;this.lastContextAttempt=signature;
     const projection=manager.buildSessionProjection(),id=randomUUID(),started=Date.now();
     let first=contextCut(projection,compactionPolicy(window).keep_recent_tokens),summary='',nonreducing=false;
     if(first){

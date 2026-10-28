@@ -48,3 +48,12 @@ test("preview limits long tables without changing the complete source or splitti
   const prefix=excerpt.slice(0,-1);assert.ok(text.startsWith(prefix));assert.equal(text[prefix.length]," ");
   assert.equal(evidencePreview(parseEvidenceText("A short source.")).hasMore,false);
 });
+
+test('scientific evidence keeps general Markdown tables and whole LaTeX formulas readable',()=>{
+  const text='### Results (%)\n\n| Model | A | B |\n| --- | --- | --- |\n'+Array.from({length:12},(_,i)=>`| Model ${i} | ${i}.1 | $\\frac{a}{b}$ |`).join('\n');
+  const full=parseEvidenceText(text);assert.deepEqual(full,[{kind:'markdown',text}]);
+  const preview=evidencePreview(full,80,6);assert.equal(preview.hasMore,true);const view=contents(preview.blocks);
+  assert.ok(view.includes('| Model | A | B |'));assert.equal((view.match(/\| Model \d+/gu)??[]).length,6);assert.ok(view.includes('还有 6 行'));assert.equal(contents(full),text);
+  const equation='The equation is\n\n$$\nL = \\frac{1}{N} \\sum_i x_i^2\n$$';
+  const formula=evidencePreview(parseEvidenceText(equation),10);assert.equal(formula.hasMore,false);assert.equal(contents(formula.blocks),equation);
+});

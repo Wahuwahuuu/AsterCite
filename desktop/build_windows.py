@@ -37,10 +37,10 @@ def stage_app(stage, cpu_python, downloads):
     if not stage.is_relative_to(ROOT/".release-work") or stage.exists():
         raise ValueError("Use a new stage directory inside .release-work")
     cpu_python=pathlib.Path(cpu_python).resolve(strict=True)
-    probe="import sys,json,importlib.metadata as m; print(json.dumps({'base':sys.base_prefix,'site':next(p for p in sys.path if p.endswith('site-packages')),'python':list(sys.version_info[:3]),'torch':m.version('torch')}))"
+    probe="import sys,json,importlib.metadata as m; print(json.dumps({'base':sys.base_prefix,'site':next(p for p in sys.path if p.endswith('site-packages')),'python':list(sys.version_info[:3]),'torch':m.version('torch'),'memory':m.version('qdrant-edge-py')}))"
     info=json.loads(subprocess.check_output([str(cpu_python),"-c",probe],text=True))
-    if info["python"] != [3,12,13] or info["torch"] != "2.9.1+cpu":
-        raise ValueError("Use CPython 3.12.13 and the locked CPU environment")
+    if info["python"] != [3,12,13] or info["torch"] != "2.9.1+cpu" or info['memory'] != '0.9.0':
+        raise ValueError("Use CPython 3.12.13 and the locked CPU environment, including Qdrant Edge")
     stage.mkdir(parents=True)
     for name in source_files():
         target=stage/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,target)

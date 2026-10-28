@@ -14,7 +14,7 @@ export interface ConclusionCandidate {
   id: string; need_id: string; text: string; source_turn: string; basis: "explicit" | "in_scope_inference";
   source_status: "verified" | "stale"; semantic_status: "pending"; sources: SourceBinding[];
 }
-export interface ReadingNote {source_turn:string;question:string;answer_excerpt:string;excerpt_truncated:boolean;paper_ids:string[];citations:string[];status:string}
+export interface ReadingNote {source_turn:string;question:string;answer_excerpt:string;excerpt_truncated:boolean;paper_ids:string[];citations:string[];status:string;execution_state?:import('./turn-execution.ts').ExecutionState}
 export interface DomainState {
   version: 1; index_version: string; current_paper: { paper_id: string; source_turn: string } | null;
   comparison_order: string[]; comparison_dimensions: string[]; object_source_turn: string | null;
@@ -47,7 +47,7 @@ export class DomainMemory {
   }
   activeConstraints(): UserConstraint[] { return this.state.user_constraints.filter((entry) => entry.superseded_by === null); }
 
-  rememberAnswer(turn:string,question:string,answer:string,paperIds:readonly string[],citations:readonly string[],status:string):void{
+  rememberAnswer(turn:string,question:string,answer:string,paperIds:readonly string[],citations:readonly string[],status:string,executionState?:import('./turn-execution.ts').ExecutionState):void{
     if(paperIds.length){
       this.state.object_source_turn=turn;
       this.state.current_paper=paperIds.length===1?{paper_id:paperIds[0],source_turn:turn}:null;
@@ -55,7 +55,7 @@ export class DomainMemory {
       if(paperIds.length===1)this.state.comparison_dimensions=[];
     }
     const chars=Array.from(answer);
-    const note:ReadingNote={source_turn:turn,question:Array.from(question).slice(0,512).join(''),answer_excerpt:chars.slice(0,1200).join(''),excerpt_truncated:chars.length>1200,paper_ids:[...paperIds],citations:[...citations],status};
+    const note:ReadingNote={source_turn:turn,question:Array.from(question).slice(0,512).join(''),answer_excerpt:chars.slice(0,1200).join(''),excerpt_truncated:chars.length>1200,paper_ids:[...paperIds],citations:[...citations],status,...(executionState?{execution_state:executionState}:{})};
     this.state.reading_notes=[...(this.state.reading_notes??[]).filter(item=>item.source_turn!==turn),note].slice(-4);
   }
 

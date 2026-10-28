@@ -1,12 +1,26 @@
 import {randomUUID} from 'node:crypto';
 import {traceInput,type TraceInput} from './execution-trace.ts';
 import type {ObservedUsage} from './ledger.ts';
-import {normalizeContext,getCurrentSystemMessage,getCurrentSystemPrompt,getCurrentTools,type Message,type Context} from '@earendil-works/pi-ai';
+import {normalizeContext,getCurrentSystemMessage,getCurrentSystemPrompt,getCurrentTools,type Message,type Context,type TranscriptContext} from '@earendil-works/pi-ai';
 
-export const CONTEXT_POLICY='workbench-context-v2';
+export const CONTEXT_POLICY='workbench-context-v3';
 export function compactionPolicy(window:number){
-  const threshold=Math.ceil(window*.8);
-  return {version:CONTEXT_POLICY,threshold_percent:80,threshold_tokens:threshold,reserve_tokens:window-threshold,keep_recent_tokens:Math.min(8192,Math.max(256,Math.floor(window*.25)))};
+  const threshold=Math.ceil(window*.7);
+  return {version:CONTEXT_POLICY,threshold_percent:70,threshold_tokens:threshold,reserve_tokens:window-threshold,keep_recent_tokens:Math.min(8192,Math.max(256,Math.floor(window*.25)))};
+}
+/** Output allocation is per request, rather than the cumulative billed token count. */
+export function requestCapacity(inputTokens:number,window:number,requestedOutput:number,modelOutput=requestedOutput){
+  const safety=Math.min(4096,Math.max(256,Math.ceil(window*.125)));
+  const output=Math.max(1,Math.floor(Math.min(requestedOutput,modelOutput)));
+  const available=Math.max(0,Math.floor(window-inputTokens-safety));
+  return {input_tokens:inputTokens,requested_output_tokens:output,safety_tokens:safety,
+    input_limit:Math.max(0,window-output-safety),max_output_tokens:Math.min(output,available),
+    fits:inputTokens+output+safety<=window};
+}
+/** A replaced evidence workspace invalidates the SDK's old prefix-usage shortcut. */
+export function providerContext(context:TranscriptContext):TranscriptContext{
+  return {...context,messages:context.messages.map(message=>message.role==='assistant'?{...message,
+    usage:{...message.usage,input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0}}:message)};
 }
 export interface ContextSample {tokens:number;basis:'provider'|'estimate';stage:string;updated_at:string;input_tokens?:number;output_tokens?:number}
 export interface CompressionRecord {id:string;reason:string;status:'completed'|'unchanged'|'error';started_at:string;finished_at:string;before_tokens:number;after_tokens:number;before_messages:number;after_messages:number;summary:string;note:string}

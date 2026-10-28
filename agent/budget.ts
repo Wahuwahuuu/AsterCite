@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { sha } from "./config.ts";
 import { RuntimeFailure } from "./contracts.ts";
 
-export interface TurnAdmission {id:string;question_sha256:string;status:"reserved"|"finished";requests:string[];result_sha256?:string}
+export interface TurnAdmission {id:string;question_sha256:string;status:"reserved"|"finished";requests:string[];request_limit?:number;result_sha256?:string}
 export interface BudgetState {version:1;implementation_id:string;max_turns:number;turns:TurnAdmission[];pending_compaction:boolean;scope:string[]}
 interface Generation {sequence:number;previous_sha256:string|null;state:BudgetState}
 export class SessionBudget {
@@ -39,14 +39,14 @@ export class SessionBudget {
            v.state.implementation_id!==savedIdentity || v.state.max_turns!==savedLimit || v.state.version!==1 ||
            typeof v.state.pending_compaction!=="boolean" || !Array.isArray(v.state.scope) || v.state.scope.some(p=>typeof p!=="string") ||
            !Array.isArray(v.state.turns) || v.state.turns.length>savedLimit || new Set(v.state.turns.map(t=>t?.id)).size!==v.state.turns.length ||
-           v.state.turns.some(t=>!t || !/^[-a-zA-Z0-9_]{1,100}$/u.test(t.id) || !/^[a-f0-9]{64}$/u.test(t.question_sha256) || !Array.isArray(t.requests) || t.requests.length>12 || t.requests.some(id=>typeof id!=='string') ||
+           v.state.turns.some(t=>!t || !/^[-a-zA-Z0-9_]{1,100}$/u.test(t.id) || !/^[a-f0-9]{64}$/u.test(t.question_sha256) || !Array.isArray(t.requests) || !Number.isInteger(t.request_limit??12) || (t.request_limit??12)<12 || (t.request_limit??12)>64 || t.requests.length>(t.request_limit??12) || t.requests.some(id=>typeof id!=='string') ||
              new Set(t.requests).size!==t.requests.length || !["reserved","finished"].includes(t.status)))
           throw new RuntimeFailure("INVALID_BUDGET","Ledger identity, count or chain differs");
         if(seq>0) {
           const old=budget.state;
           if(v.state.turns.length<old.turns.length || v.state.turns.length>old.turns.length+1)throw new RuntimeFailure("INVALID_BUDGET","Reserved turns cannot be refunded");
           for(const [i,before] of old.turns.entries()){const after=v.state.turns[i];
-            if(before.id!==after.id || before.question_sha256!==after.question_sha256 || after.requests.length<before.requests.length ||
+            if(before.id!==after.id || before.question_sha256!==after.question_sha256 || (before.request_limit??12)!==(after.request_limit??12) || after.requests.length<before.requests.length ||
                before.requests.some((id,j)=>after.requests[j]!==id) || before.status==="finished" && JSON.stringify(before)!==JSON.stringify(after))
                throw new RuntimeFailure("INVALID_BUDGET","Finished turns/requests cannot change");}
         }
@@ -62,15 +62,16 @@ export class SessionBudget {
     try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}
     this.previousHash=sha(bytes);this.generation++;
   }
-  async reserve(id:string,question:string):Promise<void>{
+  async reserve(id:string,question:string,requestLimit=12):Promise<void>{
     if(!/^[-a-zA-Z0-9_]{1,100}$/u.test(id))throw new RuntimeFailure("INVALID_BUDGET","Invalid turn ID");
+    if(!Number.isInteger(requestLimit)||requestLimit<12||requestLimit>64)throw new RuntimeFailure('INVALID_BUDGET','Invalid per-turn request limit');
     if(this.state.turns.length>=this.state.max_turns)throw new RuntimeFailure("SESSION_BUDGET_EXCEEDED","Session turn budget exhausted; create a new session");
     if(this.state.turns.some(t=>t.id===id))throw new RuntimeFailure("DUPLICATE_TURN","Turn already reserved");
-    this.state.turns.push({id,question_sha256:sha(question),status:"reserved",requests:[]});await this.persist();
+    this.state.turns.push({id,question_sha256:sha(question),status:"reserved",requests:[],...(requestLimit!==12?{request_limit:requestLimit}:{})});await this.persist();
   }
   async admit(id:string,requestId:string):Promise<void>{
     const t=this.state.turns.find(t=>t.id===id);
-    if(!t || t.status!=="reserved" || t.requests.length>=12 || t.requests.includes(requestId))throw new RuntimeFailure("REQUEST_BUDGET_EXCEEDED","Request admission rejected");
+    if(!t || t.status!=="reserved" || t.requests.length>=(t.request_limit??12) || t.requests.includes(requestId))throw new RuntimeFailure("REQUEST_BUDGET_EXCEEDED","Request admission rejected");
     t.requests.push(requestId);await this.persist();
   }
   async finish(id:string,resultSha:string):Promise<void>{
@@ -79,6 +80,6 @@ export class SessionBudget {
   }
   async compact(pending:boolean):Promise<void>{this.state.pending_compaction=pending;await this.persist();}
   async setScope(scope:string[]):Promise<void>{this.state.scope=[...scope];await this.persist();}
-  summary(){return {turns_reserved:this.state.turns.length,max_turns:this.state.max_turns,model_attempts:this.state.turns.reduce((n,t)=>n+t.requests.length,0),request_limit_per_turn:12,remaining_turns:this.state.max_turns-this.state.turns.length};}
+  summary(){return {turns_reserved:this.state.turns.length,max_turns:this.state.max_turns,model_attempts:this.state.turns.reduce((n,t)=>n+t.requests.length,0),request_limit_per_turn:this.state.turns.at(-1)?.request_limit??12,remaining_turns:this.state.max_turns-this.state.turns.length};}
   async close():Promise<void>{await this.lock.close();await unlink(join(this.directory,"session.lock"));}
 }

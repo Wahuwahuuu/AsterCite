@@ -124,6 +124,9 @@ export interface TurnRecord {
   citation_attribution?:import('./citation-attribution.ts').ClaimAttribution[];
   generation_failures?: Array<{ code: string; error: string; response_text: string; request_id: string | null }>;
   pipeline_trace?: import("./pipeline-trace.ts").PipelineTrace;
+  comparison?: import('./multi-paper.ts').ComparisonReport;
+  execution?: import('./turn-execution.ts').TurnExecution;
+  tasks?: import('./task-progress.ts').TaskProgress;
 }
 
 export function emptyUsage(): ObservedUsage {
@@ -179,12 +182,15 @@ export class TurnLedger {
   private readonly toolStarted = new Map<string, number>();
   private readonly claimedToolIds = new Set<string>();
   private readonly secrets: readonly string[];
+  private readonly toolLimits:Readonly<Record<string,number>>|undefined;
 
-  constructor(userTurnId: string, declaredScope: string[], secrets: readonly string[] = [], maxRequests = 12, maxToolCalls = 2, p2Mode = false) {
+  constructor(userTurnId: string, declaredScope: string[], secrets: readonly string[] = [], maxRequests = 12, maxToolCalls = 2, p2Mode = false,
+    toolLimits?:Readonly<Record<string,number>>) {
     this.maxRequests = maxRequests;
     this.maxToolCalls = maxToolCalls;
     this.secrets = secrets;
     this.p2Mode = p2Mode;
+    this.toolLimits=toolLimits;
     this.record = {
       user_turn_id: userTurnId, declared_scope: [...declaredScope], status: "running", final_answer: "",
       elapsed_ms: 0, agent_settled: false, compaction_events: [], requests: [], tools: [], error: null,
@@ -209,7 +215,7 @@ export class TurnLedger {
   get requestCount(): number { return this.admittedRequests; }
   get remainingRequests(): number { return this.maxRequests - this.admittedRequests; }
   toolCount(name: string): number { return this.toolCounts.get(name) ?? 0; }
-  toolLimit(name: string): number { return this.p2Mode ? name === "retrieve_chunks" ? 4 : 2 : this.maxToolCalls; }
+  toolLimit(name: string): number { return this.toolLimits?.[name]??(this.p2Mode ? name === "retrieve_chunks" ? 4 : 2 : this.maxToolCalls); }
   close(reason: string): void { this.closing = true; this.record.closing_reason ??= reason; }
 
   beginRequest(model: Model<Api>): RequestRecord {

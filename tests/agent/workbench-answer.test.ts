@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createHash} from 'node:crypto';
 import {fauxAssistantMessage as reply,fauxToolCall as call} from '@earendil-works/pi-ai';
-import {prepareWorkbenchAnswer,preferWorkbenchAnswer,pendingWorkbenchAction} from '../../agent/workbench-answer.ts';
+import {prepareWorkbenchAnswer,preferWorkbenchAnswer} from '../../agent/workbench-answer.ts';
 import {RuntimeFailure,type Chunk} from '../../agent/contracts.ts';
 import {mainFixture,preparation,SOURCE_IDS,PREPARED_INDEX} from './main-fixture.ts';
 import type {MainHarnessOptions} from '../../agent/session-main-v2.ts';
@@ -14,10 +14,19 @@ const context={evidence,expectedKind:'paper_fact' as const,allowAnswer:true};
 const grounded=`这是基于论文原文的说明。[cite:${source.chunk_id}]`;
 const f=(responses:Parameters<typeof mainFixture>[0],extra:Partial<MainHarnessOptions>={})=>mainFixture(responses,[[0]],{controls,answerPolicy:'workbench-v1',...extra});
 
-test('explicit unfinished lookups are distinguished from explanations and optional follow-up offers',()=>{
-  assert.equal(pendingWorkbenchAction(grounded+'。让我再检索该部分的具体内容：'),true);
-  assert.equal(pendingWorkbenchAction('The section outline is available. Let me retrieve the actual results:'),true);
-  for(const text of ['下面解释具体结果：','Let me explain the reported findings.','如果你想深入了解，可以告诉我，我可以继续检索。','论文介绍了检索过程和后续分析。'])assert.equal(pendingWorkbenchAction(text),false,text);
+test('execution metadata controls completion without interpreting the wording of an answer',()=>{
+  const result=prepareWorkbenchAnswer(JSON.stringify({answer:grounded,execution:{state:'working',remaining_needs:['检查尚未完成的章节'],needs_sources:true}}),context)!;
+  assert.equal(result.execution?.state,'working');assert.equal(result.value.status,'partial');
+  const complete=prepareWorkbenchAnswer(JSON.stringify({answer:grounded+'。原文用“我重新调取一下”作为举例。',execution:{state:'complete',remaining_needs:[]}}),context)!;
+  assert.equal(complete.execution?.state,'complete');assert.equal(complete.value.status,'answer');
+});
+
+test('a catalog suggestion can continue into actual source reading for an inherited paper explanation',async()=>{
+  const setup=await f([reply(JSON.stringify({intent:'find_papers',targets:[],queries:['available papers']})),reply(JSON.stringify({answer:'对象已确定，下一步处理正文。',execution:{state:'working',remaining_needs:['解释所选论文的方法'],needs_sources:true}})),
+    reply([call('search_papers',{query:'available papers',limit:1})],{stopReason:'toolUse'}),
+    reply([call('retrieve_chunks',{query:'research method',paper_ids:['p1']})],{stopReason:'toolUse'}),reply(grounded)]);
+  try{const record=await setup.harness.runTurn('那你换库里有的',[],'catalog-continue');assert.equal(record.status,'completed',record.error??'');assert.equal(record.final_answer,grounded);assert.ok(record.tools.some(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed));assert.equal(record.requests.length,5);}
+  finally{setup.harness.dispose();}
 });
 
 test('a workbench answer may retrieve again after its initial source batch and then finish normally',async()=>{
@@ -31,7 +40,7 @@ test('a workbench answer may retrieve again after its initial source batch and t
 });
 
 test('a preliminary promise to search continues through a real lookup instead of becoming the final answer',async()=>{
-  const announcement=grounded+'。让我再检索该部分的具体内容：',answer=`这里是该节的原文说明。[cite:${SOURCE_IDS[1]}]`;
+  const announcement=JSON.stringify({answer:grounded,execution:{state:'working',remaining_needs:['补齐章节具体内容'],needs_sources:true}}),answer=`这里是该节的原文说明。[cite:${SOURCE_IDS[1]}]`;
   const setup=await mainFixture([reply(JSON.stringify(preparation)),reply(announcement),reply([call('retrieve_chunks',{query:'section five actual findings',paper_ids:['p1']})],{stopReason:'toolUse'}),reply(answer)],[[0],[1]],{controls,answerPolicy:'workbench-v1'});
   try{const result=await setup.harness.runTurn('具体讲一下第五章内容。',['p1'],'workbench/pending-lookup');
     assert.equal(result.status,'completed',result.error??'');assert.equal(result.final_answer,answer);assert.equal(result.requests.length,4);assert.equal(result.business_status,'answer');
@@ -49,11 +58,11 @@ test('autonomous recovery from a preparation failure still permits several actua
 });
 
 test('repeated announcements and the final request preserve partial content without an endless continuation',async()=>{
-  const announcement=grounded+'。让我再检索该部分的具体内容：';
+  const announcement=JSON.stringify({answer:grounded,execution:{state:'working',remaining_needs:['补齐章节具体内容'],needs_sources:true}});
   for(const maxRequests of [2,3]){
     const setup=await f([reply(JSON.stringify(preparation)),reply(announcement),reply(announcement)],{maxRequests});
     try{const result=await setup.harness.runTurn('具体讲一下第五章内容。',['p1'],'workbench/pending-cap-'+maxRequests);
-      assert.equal(result.status,'completed',result.error??'');assert.equal(result.business_status,'partial');assert.equal(result.requests.length,maxRequests);assert.ok(result.final_answer.startsWith(grounded));assert.match(result.final_answer,/后续检索尚未完成/);
+      assert.equal(result.status,'completed',result.error??'');assert.equal(result.business_status,'partial');assert.equal(result.requests.length,maxRequests);assert.ok(result.final_answer.startsWith(grounded));assert.match(result.final_answer,/任务尚未全部完成|未完成任务/);
       assert.equal(result.tools.filter(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed).length,1);
     }finally{setup.harness.dispose();}
   }
