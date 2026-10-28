@@ -2,7 +2,7 @@
 
 ## 安装与启动
 
-从 [正式版本](https://github.com/Wahuwahuuu/AsterCite/releases/latest) 下载 `AsterCite-1.3.0-windows-x64-setup.exe`，安装后从开始菜单打开 AsterCite。
+从 [正式版本](https://github.com/Wahuwahuuu/AsterCite/releases/latest) 下载 `AsterCite-1.3.1-windows-x64-setup.exe`，安装后从开始菜单打开 AsterCite。
 
 支持 Windows 10 / 11 x64，推荐 16 GB 内存和至少 10 GB 可用磁盘空间。安装包包含 Node.js、Python、CPU 检索环境和论文库，不需要先安装开发工具。
 

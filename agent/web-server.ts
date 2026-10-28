@@ -48,6 +48,8 @@ const STATIC_FILES:Record<string,{file:string;type:string}>={
   ,"/reader-follow.js":{file:"reader-follow.js",type:"text/javascript; charset=utf-8"}
   ,"/pdf-citation.js":{file:"pdf-citation.js",type:"text/javascript; charset=utf-8"}
   ,"/conversations.js":{file:"conversations.js",type:"text/javascript; charset=utf-8"}
+  ,"/answer-format.js":{file:"answer-format.js",type:"text/javascript; charset=utf-8"}
+  ,"/task-progress.js":{file:"task-progress.js",type:"text/javascript; charset=utf-8"}
 };
 const rendererAssets=JSON.parse(readFileSync(new URL('../web/vendor/render-assets.json',import.meta.url),'utf8')) as {files:string[]};
 for(const name of rendererAssets.files){
