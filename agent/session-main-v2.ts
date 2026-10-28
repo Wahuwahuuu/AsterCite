@@ -16,6 +16,7 @@ import { preparedPipelineTrace, type PreparedTurnRecord } from "./pipeline-trace
 import { QUESTION_PREPARATION_INSTRUCTION, PREPARATION_VERSION, parseQuestionPreparation, preparationPayload, rawQuestionFrame, type PreparationContext, type PreparationRecord } from "./question-preparation.ts";
 import { traceInput,traceOutput,traceArguments,type ExecutionEvent } from "./execution-trace.ts";
 import { selectedTargets,coverageInstruction,validateCoverage } from "./selected-scope.ts";
+import {abstractReadingSection,groundedGenerationMessages,withAbstractReading} from './paper-reading.ts';
 import {prepareWorkbenchAnswer,preferWorkbenchAnswer,workbenchCoverageInstruction,workbenchSystemPrompt,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer} from "./workbench-answer.ts";
 
 // Versioned main controls; historical prepared/session implementations remain frozen.
@@ -189,6 +190,7 @@ export class MainPaperHarness {
     if(options.answerPolicy!==undefined&&!['strict','workbench-v1'].includes(options.answerPolicy))throw new RuntimeFailure('INVALID_CONFIG','Unknown answer policy');
     if (options.snapshot) throw new RuntimeFailure("INVALID_SNAPSHOT", "Use a component-bound controlledSnapshot, not a raw snapshot");
     if (options.p2?.profile !== (controls.arm === "A" ? "A" : "B") || Boolean(options.p2.reflect) !== controls.reflect) throw new RuntimeFailure("INVALID_CONFIG", "External arm/Reflect differs from the internal configuration");
+    if(options.answerPolicy==='workbench-v1'&&options.p2)options={...options,p2:withAbstractReading(options.p2)};
     if (options.controlledSnapshot) options = { ...options, snapshot: unwrapSnapshot(options.controlledSnapshot, controls, options.p2!.indexVersion) };
     if (options.questionPreparation !== PREPARATION_VERSION || options.p2?.executionVersion !== "full-v1" ||
       options.p2.profile === "B" && (options.p2.nlu === false || options.p2.structuredMemory === false)) {
@@ -221,7 +223,7 @@ export class MainPaperHarness {
         options.p2?.executionVersion === "full-v1" ? [nativeMemoryExtension(() => getHarness().memory.summary(getHarness().dialogue, getHarness().useDomainMemory))] : []),
       tools: [...TOOL_NAMES], excludeTools: ["mcp__*"], customTools: createPaperTools(options.worker, {
         knownPaperIds: options.knownPaperIds, getLedger: () => getHarness().activeLedger(), getScope: () => getHarness().scope,
-        ...(options.p2 ? { p2: options.p2 } : {}),recoverToolErrors:options.answerPolicy==='workbench-v1',
+        ...(options.p2 ? { p2: options.p2 } : {}),recoverToolErrors:options.answerPolicy==='workbench-v1',preferredSection:()=>getHarness().workbench?abstractReadingSection(getHarness().input):undefined,
       }),
     });
     if (extensionsResult.errors.length || extensionsResult.extensions.some((extension) => extension.path !== MEMORY_EXTENSION || options.p2?.executionVersion !== "full-v1" ||
@@ -246,7 +248,8 @@ export class MainPaperHarness {
       if (!request.admitted) throw new RuntimeFailure(ledger.failureCode ?? "BUDGET_EXCEEDED", request.error ?? "Turn stopped before model request");
       // Enforce the final payload boundary after every Pi/provider projection as well.
       const finalOnly = this.options.p2 && request.phase === "agent" && ["generate", "closing", "citation_repair"].includes(request.stage ?? "");
-      const providerContext = finalOnly ? normalizeContext({ messages: withoutToolDeclarations(context.messages) }) : context;
+      const finalMessages=finalOnly&&this.workbench?groundedGenerationMessages(context.messages,message=>message.role==='assistant'&&this.finalAnswers.has(assistantSignature(message))):context.messages;
+      const providerContext = finalOnly ? normalizeContext({ messages: withoutToolDeclarations(finalMessages) }) : context;
       request.tool_context = [...toolContextEvidence(providerContext), ...(this.r2 ? this.hostEvidence.proof(providerContext) : [])];
       if (this.full && request.phase === "agent") this.lastMainEvidence = this.r2Evidence(providerContext);
       if (this.options.authorizeRequest) {
@@ -364,7 +367,7 @@ export class MainPaperHarness {
         return { block: true, reason: error.message };
       }
       try {
-        validatePaperParams(context.toolCall.name, context.args, { knownPaperIds: this.options.knownPaperIds, getLedger: () => ledger, getScope: () => this.scope });
+        validatePaperParams(context.toolCall.name, context.args, { knownPaperIds: this.options.knownPaperIds, getLedger: () => ledger, getScope: () => this.scope,p2:this.options.p2,preferredSection:()=>this.workbench?abstractReadingSection(this.input):undefined });
       } catch (error) { ledger.rejectTool(id, error); return { block: true, reason: ledger.errorText(error) }; }
       if (this.options.p2?.profile === "B" && context.toolCall.name === "retrieve_chunks" && this.batchReservations >= 2) {
         const entry = ledger.record.tools.findLast((item) => item.tool_call_id === id);
@@ -503,7 +506,7 @@ export class MainPaperHarness {
     if(chosen===candidate)this.workbenchBest={answer:candidate,request:this.lastMainRequest,evidence:new Map(this.lastMainEvidence)};
     for(const kind of candidate.adaptations)this.audit('final_answer',output)(kind);
     if(candidate.needsCitationRepair&&!this.generationRepair&&ledger.remainingRequests>=1){
-      const error='Some citations are not linked to visible excerpts. Preserve the useful answer, use only actual visible [cite:chunk_id] markers, or state the evidence gap without inventing support.';
+      const error=`Citation attribution problems: ${JSON.stringify(candidate.citationIssues)}. Check the actual source of EACH factual statement and numeric result, not merely whether a chunk ID exists. Never use an unrelated paragraph from the same paper. Preserve supported content; remove unsupported reported numbers or clearly state the gap. A corrected citation must support the actual claim; matching a number alone is insufficient.`;
       (ledger.record.generation_failures??=[]).push({code:'INVALID_CITATION',error,response_text:Array.from(output).slice(0,16000).join(''),request_id:this.lastMainRequest?.request_id??null});
       this.generationRepair={original:output,error,code:'INVALID_CITATION'};this.enterClosing('One source-link correction; an existing answer is retained','citation_repair');return {action:'continue'};
     }
@@ -513,6 +516,7 @@ export class MainPaperHarness {
   private acceptWorkbenchAnswer():AgentTurnDecision{
     const best=this.workbenchBest!;const ledger=this.activeLedger();this.lastMainRequest=best.request;this.lastMainEvidence=new Map(best.evidence);
     ledger.record.final_request_id=best.request?.request_id??null;ledger.record.final_structure=best.answer.value;ledger.record.business_status=best.answer.value.status;
+    ledger.record.citation_attribution=best.answer.attribution;
     this.answer=best.answer.value.answer;ledger.record.citation_validity=this.citations(this.answer,best.request);
     if(this.generationRepair)ledger.record.citation_corrections!.push({original_answer:this.generationRepair.original,corrected_answer:this.answer,request_id:best.request?.request_id??null});
     return {action:'end'};
@@ -520,7 +524,7 @@ export class MainPaperHarness {
 
   private stageInstruction(): string {
     const ledger = this.activeLedger();
-    if (this.generationRepair) return `${this.finalInstruction}\nOne final correction only. ${this.generationRepair.error}\nAllowed citation IDs: ${JSON.stringify([...this.lastMainEvidence.keys()])}. Original failed response: ${this.generationRepair.original}\nDo not retrieve or invent support. Supported factual answer/partial must cite visible evidence. If support is unavailable, withdraw unsupported claims and give a clear refusal or necessary clarification; these do not need fabricated citations.`;
+    if (this.generationRepair) return `${this.finalInstruction}\nOne final correction only. ${this.generationRepair.error}\nAllowed citation IDs: ${JSON.stringify([...this.lastMainEvidence.keys()])}. Original failed response: ${this.generationRepair.original}\nDo not retrieve or invent support. Supported factual answer/partial must cite visible evidence. ${this.workbench?'Preserve useful supported explanations. For an unsupported detail, omit that detail or state the bounded evidence gap; do not turn an otherwise useful answer into a blanket refusal.':'If support is unavailable, withdraw unsupported claims and give a clear refusal or necessary clarification; these do not need fabricated citations.'}`;
     if (this.citationRepair) return `Host citation correction, one attempt only. Do not retrieve or delete citations to conceal an invalid answer.
 Correct only citation format/source availability using the actually visible excerpts. Invalid IDs: ${JSON.stringify(this.citationRepair.invalid)}.
 Available copyable citations: ${JSON.stringify([...this.validEvidenceProof(this.lastMainRequest?.tool_context ?? [])].map((id) => `[${this.r2 ? "cite:" : ""}${id}]`))}.
@@ -558,7 +562,8 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       const id = `host-${randomUUID()}`;
       const entry = ledger.beginTool("retrieve_chunks", id, "start");
       entry.execution_source = "host_plan"; entry.plan_request_id = planRequestId; entry.model_request_id = null;
-      const toolCall = { type: "toolCall" as const, id, name: "retrieve_chunks", arguments: { query: query.query, paper_ids: query.paper_ids, top_k: 5 } };
+      const section=this.workbench?abstractReadingSection(this.input,query.query):undefined;
+      const toolCall = { type: "toolCall" as const, id, name: "retrieve_chunks", arguments: { query: query.query, paper_ids: query.paper_ids, top_k: 5,...(section?{section}:{}) } };
       const toolStarted=Date.now();
       if(this.options.onExecutionEvent)this.trace({id,kind:"tool",status:"running",stage,phase:ledger.phase,parent_id:planRequestId,origin:"host_plan",tool:"retrieve_chunks",input:toolCall.arguments});
       // runToolCall requires a caller-message carrier for hooks. It is not a provider response:
@@ -654,7 +659,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     try {
       ledger.phase = "auxiliary"; ledger.stage = "question_preparation";
       const payload = preparationPayload(context, this.memory.projection(), nativeSummary?.type === "compaction" ? nativeSummary.summary : undefined);
-      const messages = normalizeContext({ messages: [{ role: "system", content: QUESTION_PREPARATION_INSTRUCTION+(this.selectedRequired.length?`\nThe user selected these papers as required objects: ${JSON.stringify(this.selectedRequired)}. Preserve ALL of them in targets; do not replace the plural question by an earlier single-paper topic. Queries must retain the original question.`:""), timestamp: Date.now() },
+      const messages = normalizeContext({ messages: [{ role: "system", content: QUESTION_PREPARATION_INSTRUCTION+(this.workbench?'\nExplaining, translating or summarizing an abstract or paper content is answer/summarize, even when the user locates the paper by a title fragment. find_papers is for catalog discovery only.':'')+(this.selectedRequired.length?`\nThe user selected these papers as required objects: ${JSON.stringify(this.selectedRequired)}. Preserve ALL of them in targets; do not replace the plural question by an earlier single-paper topic. Queries must retain the original question.`:""), timestamp: Date.now() },
         { role: "user", content: [{ type: "text", text: JSON.stringify(payload) }], timestamp: Date.now() }] });
       const response = await this.session.agent.streamFunction(this.options.model, messages, {
         ...(this.options.model.reasoning && this.options.thinkingLevel !== "off" ? { reasoning: this.options.thinkingLevel ?? "low" } : {}), signal,

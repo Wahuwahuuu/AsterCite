@@ -10,6 +10,7 @@ import { visibleTurn } from "./cli.ts";
 import type { Assets } from "./assets.ts";
 import type { ExecutionEvent } from "./execution-trace.ts";
 import type { PaperCoverage } from "./selected-scope.ts";
+import {corpusAbstracts} from './paper-reading.ts';
 
 export interface WebSource { chunk_id:string; paper_id:string; title:string; section:string; text:string }
 export interface WebExecutionDetail extends ExecutionEvent {turn_id:string;cycle:number;elapsed_ms:number;turn_elapsed_ms:number;started_at:string}
@@ -76,7 +77,8 @@ export class PaperWebSession implements WebSessionPort {
     const value=JSON.parse(redactText(JSON.stringify({...previous,...event,turn_id:this.activeTurn,cycle,turn_elapsed_ms:elapsed,started_at:startedAt,elapsed_ms:event.elapsed_ms??Date.now()-Date.parse(startedAt)}),[this.key])) as WebExecutionDetail;
     this.traceDetails.set(event.id,value);
     const preparing=["question_preparation","question_frame"].includes(event.stage);
-    const label=event.kind==="tool"?event.tool==="search_papers"?"查找论文":"检索与重排原文":preparing?"理解问题与改写查询":event.stage==="citation_repair"?"修正回答与引用":event.phase==="compaction"?"压缩会话上下文":["generate","closing"].includes(event.stage)?"依据原文整理回答":"分析证据与选择行动";
+    const readingAbstract=(value.input as {section?:string}|undefined)?.section==='abstract'||value.output?.text.includes('"backend":"corpus_abstract_v1"');
+    const label=event.kind==="tool"?event.tool==="search_papers"?"查找论文":readingAbstract?"读取摘要原文":"检索与重排原文":preparing?"理解问题与改写查询":event.stage==="citation_repair"?"修正回答与引用":event.phase==="compaction"?"压缩会话上下文":["generate","closing"].includes(event.stage)?"依据原文整理回答":"分析证据与选择行动";
     let detail=event.kind==="model"?event.status==="running"?"查看本轮模型上下文与请求内容":"查看模型可见输出与工具选择":"";
     if(event.kind==="tool"){
       const input=value.input as {query?:string;paper_ids?:string[]}|undefined;
@@ -97,7 +99,7 @@ export class PaperWebSession implements WebSessionPort {
     worker:WorkerTransport,sources:ReadonlyMap<string,Chunk>,key:string,
     createHarness?:(options:MainHarnessOptions)=>Promise<MainPaperHarness>){
     this.directory=directory;this.budget=budget;this.assets=assets;this.config=config;this.worker=worker;
-    this.sources=sources;this.key=key;this.createHarness=createHarness;
+    this.sources=new Map([...sources,...[...corpusAbstracts(assets.publicPapers,assets.indexVersion).values()].map(source=>[source.chunk_id,source] as const)]);this.key=key;this.createHarness=createHarness;
     this.controls={arm:"C",reflect:false,compaction:config.session.compaction,reliability:"candidate",implementation_id:assets.implementationId};
   }
   static async open(options:{directory:string;assets:Assets;config:AppConfig;worker:WorkerTransport;sources:ReadonlyMap<string,Chunk>;key:string;

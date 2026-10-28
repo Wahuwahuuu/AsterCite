@@ -34,6 +34,8 @@
   "agent/web-session.ts",
   "agent/worker-client.ts",
   "agent/workbench-answer.ts",
+  "agent/paper-reading.ts",
+  "agent/citation-attribution.ts",
   "configs/model.example.json",
   "data/full-v1/manifests/corpus.json",
   "data/full-v1/manifests/source.json",

@@ -10,6 +10,7 @@ export interface ToolContext {
   getScope(): readonly string[];
   p2?: P2HarnessConfig;
   recoverToolErrors?:boolean;
+  preferredSection?:()=> 'abstract'|undefined;
 }
 
 function failTool(ctx:ToolContext,ledger:TurnLedger,error:unknown):void{
@@ -40,7 +41,9 @@ function searchResult(value: unknown, ctx: ToolContext, limit: number): SearchRe
       typeof paper.title !== "string" || typeof paper.abstract !== "string" || codepoints(paper.abstract) > 1200) {
       throw new RuntimeFailure("INVALID_RESPONSE", "Invalid paper result");
     }
-    return { paper_id: paper.paper_id, title: paper.title, abstract: paper.abstract };
+    const original=ctx.p2?.abstractSources?ctx.p2.publicPapers.find(original=>original.paper_id===paper.paper_id):undefined;
+    if(original&&(paper.title!==original.title||!original.abstract.startsWith(paper.abstract)))throw new RuntimeFailure('INVALID_RESPONSE','Catalog preview differs from the approved corpus');
+    return { paper_id: paper.paper_id, title: paper.title, abstract: paper.abstract,...(original?{abstract_truncated:codepoints(original.abstract)>codepoints(paper.abstract),abstract_length:codepoints(original.abstract)}:{}) };
   });
   const scope = ctx.getScope();
   return { papers: papers.filter((paper) => scope.length === 0 || scope.includes(paper.paper_id)).slice(0, limit),
@@ -57,7 +60,7 @@ function retrieveResult(value: unknown, requested: readonly string[], topK: numb
     }
     if (!requested.includes(chunk.paper_id as string) || !Number.isInteger(chunk.start) || !Number.isInteger(chunk.end) ||
       (chunk.start as number) < 0 || (chunk.end as number) <= (chunk.start as number) ||
-      (chunk.end as number) - (chunk.start as number) !== codepoints(chunk.text as string) || codepoints(chunk.text as string) > 2000) {
+      (chunk.end as number) - (chunk.start as number) !== codepoints(chunk.text as string) || codepoints(chunk.text as string) > 2000&&ctx.p2?.abstractSources?.get(chunk.paper_id as string)?.chunk_id!==chunk.chunk_id) {
       throw new RuntimeFailure("INVALID_RESPONSE", "Invalid chunk range or paper scope");
     }
     if (ctx.p2) {
@@ -88,8 +91,11 @@ function retrieveResult(value: unknown, requested: readonly string[], topK: numb
 /** Same deterministic validation before P2 reservation and at the worker boundary. */
 export function validatePaperParams(name: string, value: unknown, ctx: ToolContext): void {
   const params = object(value);
-  if (typeof params.query !== "string") throw new RuntimeFailure("INVALID_PARAMS", "Query must be text");
-  query(params.query);
+  const abstract=Boolean(ctx.p2?.abstractSources)&&(params.section==='abstract'||params.section===undefined&&ctx.preferredSection?.()==='abstract');
+  if(params.section!==undefined&&(!ctx.p2?.abstractSources||params.section!=='abstract'))throw new RuntimeFailure('INVALID_PARAMS','Requested reading section is unavailable');
+  const text=params.query===undefined&&abstract?'Read the original abstract':params.query;
+  if (typeof text !== "string") throw new RuntimeFailure("INVALID_PARAMS", "Query must be text");
+  query(text);
   if (name === "search_papers") { bounded(params.limit as number | undefined, 5, 10); return; }
   if (name !== "retrieve_chunks") throw new RuntimeFailure("TOOL_NOT_ALLOWED", "Tool is outside the allowed registry");
   bounded(params.top_k as number | undefined, 5, 5);
@@ -130,25 +136,28 @@ export function createPaperTools(worker: WorkerTransport, ctx: ToolContext): Too
       } finally { entry.elapsed_ms = Date.now() - started; }
     },
   };
-  const retrieve: ToolDefinition<typeof retrieveSchema> = {
-    name: "retrieve_chunks", label: "Retrieve evidence", description: "Retrieve source text from 1..4 explicitly chosen corpus paper IDs. Cite chunk IDs and use only these excerpts as evidence.",
-    promptSnippet: "Retrieve source chunks for permitted paper IDs; cite chunk IDs.", parameters: retrieveSchema, executionMode: "sequential",
+  const retrieve: ToolDefinition<typeof abstractRetrieveSchema> = {
+    name: "retrieve_chunks", label: "Retrieve evidence", description: "Retrieve source text from 1..4 explicitly chosen corpus paper IDs. Cite chunk IDs and use only these excerpts as evidence."+(ctx.p2?.abstractSources?' Use section=abstract to read complete original abstracts; catalog abstracts are navigation previews.':''),
+    promptSnippet: "Retrieve source chunks for permitted paper IDs; cite chunk IDs.", parameters: (ctx.p2?.abstractSources?abstractRetrieveSchema:retrieveSchema) as typeof abstractRetrieveSchema, executionMode: "sequential",
     async execute(toolCallId, params, signal) {
       const ledger = ctx.getLedger();
       const entry = ledger.beginTool("retrieve_chunks", toolCallId);
       const started = Date.now();
       try {
-        query(params.query);
+        const abstract=Boolean(ctx.p2?.abstractSources)&&(params.section==='abstract'||params.section===undefined&&ctx.preferredSection?.()==='abstract');
+        if(params.section!==undefined&&(!ctx.p2?.abstractSources||params.section!=='abstract'))throw new RuntimeFailure('INVALID_PARAMS','Requested reading section is unavailable');
+        const requestQuery=params.query??(abstract?'Read the original abstract':'');query(requestQuery);
         const topK = bounded(params.top_k, 5, 5);
         if (params.paper_ids.length < 1 || params.paper_ids.length > 4 || new Set(params.paper_ids).size !== params.paper_ids.length ||
           params.paper_ids.some((id) => !ctx.knownPaperIds.has(id))) throw new RuntimeFailure("INVALID_PARAMS", "Paper IDs must be distinct known corpus IDs");
         const scope = ctx.getScope();
         if (scope.length && params.paper_ids.some((id) => !scope.includes(id))) throw new RuntimeFailure("SCOPE_VIOLATION", "Retrieval cannot expand the user-declared paper scope");
         if (ctx.p2) ledger.dispatchedTool(toolCallId);
-        const result = retrieveResult(await worker.request("retrieve_chunks", { query: params.query, paper_ids: params.paper_ids, top_k: topK,
+        const raw=abstract?{backend:'corpus_abstract_v1',index_version:ctx.p2!.indexVersion,chunks:params.paper_ids.flatMap(id=>{const source=ctx.p2!.abstractSources!.get(id);return source?[source]:[];})}:await worker.request("retrieve_chunks", { query: requestQuery, paper_ids: params.paper_ids, top_k: topK,
           ...(ctx.p2 ? { allowed_paper_ids: [...(ctx.getScope().length ? ctx.getScope() : ctx.knownPaperIds)] } : {}),
-        }, signal), params.paper_ids, topK, ctx, params.query);
-        if (ctx.p2) { entry.query = params.query; entry.effective_query = result.effective_query ?? params.query;
+        }, signal);
+        const result = retrieveResult(raw, params.paper_ids, abstract?5:topK, ctx, requestQuery);
+        if (ctx.p2) { entry.query = requestQuery; entry.effective_query = result.effective_query ?? requestQuery;
           entry.query_normalization = result.query_normalization ?? "none"; }
         entry.paper_ids = params.paper_ids;
         entry.chunk_ids = result.chunks.map((chunk) => chunk.chunk_id);
@@ -171,3 +180,4 @@ export function createPaperTools(worker: WorkerTransport, ctx: ToolContext): Too
 
 const searchSchema = Type.Object({ query: Type.String({ minLength: 1, maxLength: 1000 }), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }, { additionalProperties: false });
 const retrieveSchema = Type.Object({ query: Type.String({ minLength: 1, maxLength: 1000 }), paper_ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 4, uniqueItems: true }), top_k: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })) }, { additionalProperties: false });
+const abstractRetrieveSchema=Type.Object({query:Type.Optional(Type.String({minLength:1,maxLength:1000})),paper_ids:Type.Array(Type.String({minLength:1}),{minItems:1,maxItems:4,uniqueItems:true}),top_k:Type.Optional(Type.Integer({minimum:1,maximum:5})),section:Type.Optional(Type.Literal('abstract'))},{additionalProperties:false});

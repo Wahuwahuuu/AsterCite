@@ -2,8 +2,8 @@ export const TOOL_NAMES = ["search_papers", "retrieve_chunks"] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
 export interface SearchParams { query: string; limit?: number; allowed_paper_ids?: string[] }
-export interface RetrieveParams { query: string; paper_ids: string[]; top_k?: number; allowed_paper_ids?: string[] }
-export interface Paper { paper_id: string; title: string; abstract: string }
+export interface RetrieveParams { query: string; paper_ids: string[]; top_k?: number; allowed_paper_ids?: string[];section?:'abstract' }
+export interface Paper { paper_id: string; title: string; abstract: string;abstract_truncated?:boolean;abstract_length?:number }
 export interface Chunk {
   text: string;
   paper_id: string;
@@ -30,6 +30,7 @@ export interface P2HarnessConfig {
   indexVersion: string;
   evidenceIndex: ReadonlyMap<string, EvidenceIdentity>;
   publicPapers: readonly Paper[];
+  abstractSources?:ReadonlyMap<string,Chunk>;
   commonPrompt?: string;
   executionVersion?: "r1" | "r2" | "full-v1";
   /** Full-project component ablation; both profiles retain real dialogue/native compaction. */

@@ -121,6 +121,7 @@ export interface TurnRecord {
     skipped_duplicates: number; new_chunk_ids: string[] }>;
   business_status?: "answer" | "partial" | "refusal" | "clarification" | null;
   final_structure?: import("./final-answer.ts").FinalAnswer;
+  citation_attribution?:import('./citation-attribution.ts').ClaimAttribution[];
   generation_failures?: Array<{ code: string; error: string; response_text: string; request_id: string | null }>;
   pipeline_trace?: import("./pipeline-trace.ts").PipelineTrace;
 }

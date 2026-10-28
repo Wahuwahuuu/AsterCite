@@ -2,6 +2,7 @@ import { RuntimeFailure, codepoints, object, type Paper } from "./contracts.ts";
 import type { DialogueRecord, UserConstraint } from "./domain-memory.ts";
 import type { FullFrame, Intent, ConstraintUpdate } from "./full-stages.ts";
 import { stageObject } from "./p2-stages.ts";
+import {asksForAbstract} from './paper-reading.ts';
 
 export const PREPARATION_VERSION = "light-v1" as const;
 export const WHOLE_QUESTION_NEED = "Address every object, fact, condition, relationship and requested list in the complete original_question; preserve actual dialogue and latest user corrections.";
@@ -81,7 +82,7 @@ export function parseQuestionPreparation(response: string, context: PreparationC
     const fields = ["intent", "targets", "rewrite", "queries", "constraints", "needs", "comparison_dimensions", "clarification"];
     if (Object.keys(raw).some(key => !fields.includes(key))) warnings.push("unused_fields_ignored");
     const conversational=isConversationalInput(context.original);
-    const intent = conversational?"session_control":typeof raw.intent === "string" && Object.hasOwn(intentMap, raw.intent) ? intentMap[raw.intent] : "single_paper_qa";
+    let intent = conversational?"session_control":typeof raw.intent === "string" && Object.hasOwn(intentMap, raw.intent) ? intentMap[raw.intent] : "single_paper_qa";
     if(conversational&&raw.intent!=="session_update"&&raw.intent!=="session_control")warnings.push("conversation_intent_restored");
     if (typeof raw.intent !== "string" || !Object.hasOwn(intentMap, raw.intent)) warnings.push("unknown_intent_defaulted_to_answer");
     let targets = strings(raw.targets ?? [], "targets", 4, 100);
@@ -99,6 +100,7 @@ export function parseQuestionPreparation(response: string, context: PreparationC
       if(resolved.length===1){targets=resolved;warnings.push('resolved_paper_reference_retained');}
     }
     if(conversational)targets=[];
+    if(context.preferResolvedPaper&&asksForAbstract(context.original)&&intent==='paper_discovery'){intent=targets.length>1?'scoped_summary':'single_paper_qa';warnings.push('paper_reading_intent_restored');}
     const rewrite = raw.rewrite === undefined ? context.original : text(raw.rewrite, "rewrite", 12000);
     if (raw.rewrite === undefined) warnings.push("rewrite_defaulted_to_original");
     const inherited: UserConstraint[] = [];
