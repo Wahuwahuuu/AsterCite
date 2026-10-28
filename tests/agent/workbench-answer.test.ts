@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createHash} from 'node:crypto';
 import {fauxAssistantMessage as reply,fauxToolCall as call} from '@earendil-works/pi-ai';
-import {prepareWorkbenchAnswer,preferWorkbenchAnswer} from '../../agent/workbench-answer.ts';
+import {prepareWorkbenchAnswer,preferWorkbenchAnswer,pendingWorkbenchAction} from '../../agent/workbench-answer.ts';
 import {RuntimeFailure,type Chunk} from '../../agent/contracts.ts';
 import {mainFixture,preparation,SOURCE_IDS,PREPARED_INDEX} from './main-fixture.ts';
 import type {MainHarnessOptions} from '../../agent/session-main-v2.ts';
@@ -13,6 +13,58 @@ const evidence=new Map([[source.chunk_id,source]]);
 const context={evidence,expectedKind:'paper_fact' as const,allowAnswer:true};
 const grounded=`这是基于论文原文的说明。[cite:${source.chunk_id}]`;
 const f=(responses:Parameters<typeof mainFixture>[0],extra:Partial<MainHarnessOptions>={})=>mainFixture(responses,[[0]],{controls,answerPolicy:'workbench-v1',...extra});
+
+test('explicit unfinished lookups are distinguished from explanations and optional follow-up offers',()=>{
+  assert.equal(pendingWorkbenchAction(grounded+'。让我再检索该部分的具体内容：'),true);
+  assert.equal(pendingWorkbenchAction('The section outline is available. Let me retrieve the actual results:'),true);
+  for(const text of ['下面解释具体结果：','Let me explain the reported findings.','如果你想深入了解，可以告诉我，我可以继续检索。','论文介绍了检索过程和后续分析。'])assert.equal(pendingWorkbenchAction(text),false,text);
+});
+
+test('a workbench answer may retrieve again after its initial source batch and then finish normally',async()=>{
+  const answer=`第五节的具体内容如下。[cite:${SOURCE_IDS[1]}]`;
+  const setup=await mainFixture([reply(JSON.stringify(preparation)),reply([{type:'text',text:'继续读取第五节原文。'},call('retrieve_chunks',{query:'section five performance details',paper_ids:['p1'],top_k:5})],{stopReason:'toolUse'}),reply(answer)],[[0],[1]],{controls,answerPolicy:'workbench-v1'});
+  try{const result=await setup.harness.runTurn('具体讲一下第五章内容。',['p1'],'workbench/continued-tools');
+    assert.equal(result.status,'completed',result.error??'');assert.equal(result.final_answer,answer);assert.equal(result.requests.length,3);
+    assert.equal(result.tools.filter(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed).length,2);assert.deepEqual(result.citation_validity.unknown_ids,[]);
+    assert.equal(setup.harness.snapshot().state.dialogue.at(-1)?.final_answer,answer);
+  }finally{setup.harness.dispose();}
+});
+
+test('a preliminary promise to search continues through a real lookup instead of becoming the final answer',async()=>{
+  const announcement=grounded+'。让我再检索该部分的具体内容：',answer=`这里是该节的原文说明。[cite:${SOURCE_IDS[1]}]`;
+  const setup=await mainFixture([reply(JSON.stringify(preparation)),reply(announcement),reply([call('retrieve_chunks',{query:'section five actual findings',paper_ids:['p1']})],{stopReason:'toolUse'}),reply(answer)],[[0],[1]],{controls,answerPolicy:'workbench-v1'});
+  try{const result=await setup.harness.runTurn('具体讲一下第五章内容。',['p1'],'workbench/pending-lookup');
+    assert.equal(result.status,'completed',result.error??'');assert.equal(result.final_answer,answer);assert.equal(result.requests.length,4);assert.equal(result.business_status,'answer');
+    assert.equal(result.tools.filter(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed).length,2);assert.equal(result.final_request_id,result.requests.at(-1)?.request_id);
+  }finally{setup.harness.dispose();}
+});
+
+test('autonomous recovery from a preparation failure still permits several actual research steps',async()=>{
+  const answer=`第五节的具体说明。[cite:${SOURCE_IDS[1]}]`;
+  const setup=await mainFixture([reply('not a preparation object'),reply([call('search_papers',{query:'Paper One',limit:1})],{stopReason:'toolUse'}),reply([call('retrieve_chunks',{query:'section 5 outline',paper_ids:['p1']})],{stopReason:'toolUse'}),reply([call('retrieve_chunks',{query:'section 5 performance details',paper_ids:['p1']})],{stopReason:'toolUse'}),reply(answer)],[[0],[1]],{controls,answerPolicy:'workbench-v1'});
+  try{const result=await setup.harness.runTurn('具体讲一下第五章内容。',['p1'],'workbench/autonomous-loop');
+    assert.equal(result.status,'completed',result.error??'');assert.equal(result.final_answer,answer);assert.equal(result.question_preparation.status,'fallback');assert.equal(result.requests.length,5);
+    assert.equal(result.tools.filter(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed).length,2);
+  }finally{setup.harness.dispose();}
+});
+
+test('repeated announcements and the final request preserve partial content without an endless continuation',async()=>{
+  const announcement=grounded+'。让我再检索该部分的具体内容：';
+  for(const maxRequests of [2,3]){
+    const setup=await f([reply(JSON.stringify(preparation)),reply(announcement),reply(announcement)],{maxRequests});
+    try{const result=await setup.harness.runTurn('具体讲一下第五章内容。',['p1'],'workbench/pending-cap-'+maxRequests);
+      assert.equal(result.status,'completed',result.error??'');assert.equal(result.business_status,'partial');assert.equal(result.requests.length,maxRequests);assert.ok(result.final_answer.startsWith(grounded));assert.match(result.final_answer,/后续检索尚未完成/);
+      assert.equal(result.tools.filter(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed).length,1);
+    }finally{setup.harness.dispose();}
+  }
+});
+
+test('continuing tool rounds preserve the existing four-retrieval allowance',async()=>{
+  const steps=Array.from({length:3},(_,i)=>reply([call('retrieve_chunks',{query:'detail '+i,paper_ids:['p1']})],{stopReason:'toolUse'}));
+  const setup=await f([reply(JSON.stringify(preparation)),...steps,reply(grounded)]);
+  try{const result=await setup.harness.runTurn('分步检索 p1 的具体内容',['p1'],'workbench/retrieval-cap');assert.equal(result.status,'completed',result.error??'');assert.equal(result.final_answer,grounded);assert.equal(result.tools.filter(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed).length,4);assert.equal(result.requests.length,5);}
+  finally{setup.harness.dispose();}
+});
 
 test('ordinary Markdown and exact known source IDs are accepted without a JSON wrapper',()=>{
   const raw=`## 方法\n\n回答正文 [${source.chunk_id}]`,result=prepareWorkbenchAnswer(raw,context)!;

@@ -124,6 +124,7 @@ export class MainPaperHarness {
   private selectedRequired:string[]=[];
   private workbenchBest:{answer:WorkbenchAnswer;request:RequestRecord|undefined;evidence:Map<string,Chunk>}|undefined;
   private workbenchTruncated=false;
+  private workbenchContinuationUsed=false;
   private trace(event:ExecutionEvent):void{try{this.options.onExecutionEvent?.(JSON.parse(redactText(JSON.stringify(event),this.options.secrets)));}catch{/* Observation must never change inference. */}}
   private autonomousEvidenceBefore = new Set<string>();
   private preparation: PreparationRecord = { version: PREPARATION_VERSION, status: "skipped", request_id: null, reason: "No user turn", result: null };
@@ -360,6 +361,13 @@ export class MainPaperHarness {
     this.session.setActiveToolsByName([]);
   }
 
+  private continueWorkbenchGeneration():void{
+    const ledger=this.activeLedger();
+    if(ledger.closing||ledger.remainingRequests<=1||!this.availableTools().length){this.enterClosing('Tool or exploration allowance exhausted; finish with current evidence and state remaining gaps','generate');return;}
+    ledger.phase='agent';ledger.stage='generate';this.batchReservations=0;
+    this.session.setActiveToolsByName(this.availableTools());
+  }
+
   private installP2Hooks(): void {
     const agent = this.session.agent;
     const previousPrepare = agent.prepareRequest;
@@ -414,6 +422,14 @@ export class MainPaperHarness {
       const toolCalls = turn.message.content.filter((block) => block.type === "toolCall");
       const output = turn.message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
       this.workbenchTruncated=turn.message.stopReason==='length';
+      if(this.workbench&&!this.useReflect&&!ledger.closing){
+        if(!toolCalls.length)return this.finishAnswer(output);
+        if(output)ledger.record.internal_drafts!.push(output);
+        try{if(turn.toolResults.some(result=>result.toolName==='retrieve_chunks'))await this.completeFullReflect(signal);
+          else this.continueWorkbenchGeneration();}
+        catch(error){ledger.fail(error instanceof RuntimeFailure?error.code:'CHECK_ERROR',error);return {action:'end'};}
+        return {action:'continue'};
+      }
       if (["generate", "closing", "citation_repair"].includes(ledger.stage)) {
         if (toolCalls.length) {
           if(this.workbench&&citationIds(output).some(id=>this.lastMainEvidence.has(id)))return this.finishFullAnswer(output);
@@ -531,6 +547,10 @@ export class MainPaperHarness {
     const chosen=preferWorkbenchAnswer(this.workbenchBest?.answer,candidate);
     if(chosen===candidate)this.workbenchBest={answer:candidate,request:this.lastMainRequest,evidence:new Map(this.lastMainEvidence)};
     for(const kind of candidate.adaptations)this.audit('final_answer',output)(kind);
+    if(candidate.pendingAction&&!this.workbenchContinuationUsed&&ledger.remainingRequests>=1){
+      this.workbenchContinuationUsed=true;ledger.record.internal_drafts!.push(output);
+      this.continueWorkbenchGeneration();return {action:'continue'};
+    }
     if(candidate.needsCitationRepair&&!this.generationRepair&&ledger.remainingRequests>=1){
       const error=`Citation attribution problems: ${JSON.stringify(candidate.citationIssues)}. Check the actual source of EACH factual statement and numeric result, not merely whether a chunk ID exists. Never use an unrelated paragraph from the same paper. Preserve supported content; remove unsupported reported numbers or clearly state the gap. A corrected citation must support the actual claim; matching a number alone is insufficient.`;
       (ledger.record.generation_failures??=[]).push({code:'INVALID_CITATION',error,response_text:Array.from(output).slice(0,16000).join(''),request_id:this.lastMainRequest?.request_id??null});
@@ -550,12 +570,13 @@ export class MainPaperHarness {
 
   private stageInstruction(): string {
     const ledger = this.activeLedger();
+    if(this.workbench&&!this.useReflect&&!ledger.closing)return `${this.finalInstruction}\nUse the active tools whenever the current excerpts do not yet answer the complete original question. A first retrieval is not a requirement to stop. Make actual tool calls for additional lookup, then explain the results; do not end the reply with an announcement of a future action. Answer directly when the question is already answered, and state real evidence gaps when further lookup is unavailable. No separate Reflect step is required. ${this.workbenchContinuationUsed?'The previous reply only announced another lookup. Execute that lookup through a real tool call now, or clearly state the remaining gap instead of repeating the announcement.':''} ${this.frame?`QuestionFrame (fallible hint): ${JSON.stringify(this.frame)}. Preserve the actual original question and conversation.`:''}`;
     if (this.generationRepair) return `${this.finalInstruction}\nOne final correction only. ${this.generationRepair.error}\nAllowed citation IDs: ${JSON.stringify([...this.lastMainEvidence.keys()])}. Original failed response: ${this.generationRepair.original}\nDo not retrieve or invent support. Supported factual answer/partial must cite visible evidence. ${this.workbench?'Preserve useful supported explanations. For an unsupported detail, omit that detail or state the bounded evidence gap; do not turn an otherwise useful answer into a blanket refusal.':'If support is unavailable, withdraw unsupported claims and give a clear refusal or necessary clarification; these do not need fabricated citations.'}`;
     if (this.citationRepair) return `Host citation correction, one attempt only. Do not retrieve or delete citations to conceal an invalid answer.
 Correct only citation format/source availability using the actually visible excerpts. Invalid IDs: ${JSON.stringify(this.citationRepair.invalid)}.
 Available copyable citations: ${JSON.stringify([...this.validEvidenceProof(this.lastMainRequest?.tool_context ?? [])].map((id) => `[${this.r2 ? "cite:" : ""}${id}]`))}.
 Original candidate answer: ${this.citationRepair.original}`;
-    if (ledger.closing) return `${this.full && this.options.p2?.answerContract === "full-v1-json" ? this.finalInstruction : ""}\nHost stage ${ledger.stage}: retrieval is closed. Answer or clarify using only actually visible excerpts and real dialogue. State bounded evidence insufficiency when needed. Do not request tools. ${this.frame ? `QuestionFrame (fallible model parsing): ${JSON.stringify(this.frame)}. If its real ambiguity is unresolved, ask for clarification.` : ""} ${this.check ? `EvidenceCheck (fallible model assessment): ${JSON.stringify(this.check)}` : ""}
+    if (ledger.closing) return `${this.full && this.options.p2?.answerContract === "full-v1-json" ? this.finalInstruction : ""}\nHost stage ${ledger.stage}: retrieval is closed. Answer or clarify using only actually visible excerpts and real dialogue. State bounded evidence insufficiency when needed. Do not request tools. ${this.workbench?'Finish the actual answer now; do not end by promising a later search or action.':''} ${this.frame ? `QuestionFrame (fallible model parsing): ${JSON.stringify(this.frame)}. If its real ambiguity is unresolved, ask for clarification.` : ""} ${this.check ? `EvidenceCheck (fallible model assessment): ${JSON.stringify(this.check)}` : ""}
 ${(this.frame as FullFrame | undefined)?.intent === "session_control" ? 'Use answer_kind="session_control"; respond naturally to greetings, thanks, workbench usage questions or actual user session instructions. No paper findings or paper citations are required.' : (this.frame as FullFrame | undefined)?.intent === "paper_discovery" ? `Use answer_kind="catalog"; locate only these actual public catalog entries. No paper findings. ${JSON.stringify(this.options.p2!.publicPapers.filter((paper) => this.allowed().has(paper.paper_id)).map(({paper_id,title}) => ({paper_id,title})))}` : ""}
 ${this.r2 && this.options.p2?.profile === "B" && this.check?.checks.some((need) => need.status !== "supported") ? "Unresolved needs remain: do not publish a complete affirmative answer. Provide only supported partial facts and explicitly identify missing facts and the scope/budget of this retrieval. Not found in these excerpts is not proof that the paper has no answer." : ""}`;
     if (this.full && (!this.useNlu || this.autonomousPreparation) && this.frame) return `${this.finalInstruction}\nQuestion preparation uses autonomous retrieval (${this.preparation.status === "fallback" ? "one invalid preparation retained" : "target discovery required"}). Interpret the complete ORIGINAL question and actual dialogue through the two domain tools. Obtain source evidence for factual answers; the host will Reflect after retrieval. Preparation is fallible and cannot replace the original question. ${this.preparation.result ? `Query suggestions: ${JSON.stringify({ rewrite: this.preparation.result.rewrite, frame: this.frame })}.` : ""} You may directly finish a catalog/session_control request of that explicit answer_kind without paper research claims.`;
@@ -756,7 +777,11 @@ Complete this retrieval batch through the declared tools. If separate queries ar
         await this.hostBatch(queries,"retrieve_selected",this.preparation.request_id??ledger.record.requests.at(-1)!.request_id,signal);
       }
     }
-    if (!this.useReflect) { this.enterClosing("Reflect disabled by C component control; no host supplement", "generate"); return; }
+    if (!this.useReflect) {
+      if(this.workbench)this.continueWorkbenchGeneration();
+      else this.enterClosing("Reflect disabled by C component control; no host supplement", "generate");
+      return;
+    }
     if (ledger.remainingRequests < 2) {
       if(this.workbench){this.enterClosing('Optional evidence check skipped to preserve the answer request','generate');return;}
       throw new RuntimeFailure("BUDGET_EXCEEDED", "B must reserve Reflect and Generate");
@@ -837,6 +862,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     this.selectedRequired=required.length>1?required:[];
     this.workbenchBest=undefined;
     this.workbenchTruncated=false;
+    this.workbenchContinuationUsed=false;
     this.answer = "";
     this.adaptations = [];
     this.input = userText; this.frame = undefined; this.check = undefined; this.supplementUsed = false; this.batchReservations = 0;

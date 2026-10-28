@@ -22,6 +22,13 @@ export interface WorkbenchAnswer {
   value:FinalAnswer;original:string;notices:string[];adaptations:string[];
   citationIssues:string[];needsCitationRepair:boolean;visibleCitationCount:number;
   attribution:ClaimAttribution[];
+  pendingAction:boolean;
+}
+
+/** An explicit unexecuted action at the end is a continuation, not a finished explanation. */
+export function pendingWorkbenchAction(text:string):boolean{
+  return /(?:^|[。！？.!?\n])\s*(?:(?:让|容)我(?:再|继续|先|来)?|我(?:会|将|需要|先|再|接下来(?:会)?))[^。！？.!?\n]{0,100}(?:检索|搜索|查阅|查询|查找|核实|读取|阅读)[^。！？.!?\n]{0,100}[：:。.!！\s]*$/u.test(text)
+    ||/(?:^|[.!?\n])\s*(?:let me|i (?:will|shall|need to|am going to)|i['’]ll)\s+[^.!?\n]{0,80}(?:look up|search|retrieve|read|check|inspect)[^.!?\n]{0,100}[:.!\s]*$/iu.test(text);
 }
 
 export function workbenchSystemPrompt(prompt:string):string{
@@ -124,16 +131,19 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
     const gaps=coverage.filter(paper=>paper.status==='insufficient');
     if(gaps.length){if(status==='answer')status='partial';notices.push('以下论文尚未充分覆盖：'+gaps.map(paper=>paper.paper_id).join('、'));}
   }
+  const pendingAction=kind==='paper_fact'&&pendingWorkbenchAction(body);
+  if(pendingAction){status='partial';notices.push('后续检索尚未完成，以上仅为当前已经找到的内容');adaptations.push('unfinished_tool_action');}
   if(positive&&(notices.length||limited))status='partial';
   const distinctNotices=[...new Set(notices)];
-  const answer=body+(distinctNotices.length?'\n\n原文关联说明：'+distinctNotices.join('；')+'。':'');
+  const answer=body+(distinctNotices.length?'\n\n'+(pendingAction?'本轮说明':'原文关联说明')+'：'+distinctNotices.join('；')+'。':'');
   return {value:{status,answer_kind:kind,answer,exact_quotes:quotes,...(coverage?{paper_coverage:coverage}:{})},original:output,
     notices:distinctNotices,adaptations:[...new Set(adaptations)],citationIssues:[...new Set(citationIssues)],
-    needsCitationRepair:positive&&citationIssues.length>0&&context.evidence.size>0,visibleCitationCount:ids.length,attribution:attribution.checks};
+    needsCitationRepair:positive&&citationIssues.length>0&&context.evidence.size>0,visibleCitationCount:ids.length,attribution:attribution.checks,pendingAction};
 }
 
 /** A correction must improve source linkage or explicitly withdraw unsupported findings. */
 export function preferWorkbenchAnswer(previous:WorkbenchAnswer|undefined,current:WorkbenchAnswer):WorkbenchAnswer{
+  if(previous&&previous.pendingAction!==current.pendingAction)return previous.pendingAction?current:previous;
   if(!previous||!current.citationIssues.length||['refusal','clarification'].includes(current.value.status))return current;
   if(current.visibleCitationCount!==previous.visibleCitationCount)return current.visibleCitationCount>previous.visibleCitationCount?current:previous;
   if(current.citationIssues.length!==previous.citationIssues.length)return current.citationIssues.length<previous.citationIssues.length?current:previous;
