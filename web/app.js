@@ -213,7 +213,7 @@ async function sendQuestion(){
     const headers={'Content-Type':'application/json','X-AsterCite-Request':'1','X-AsterCite-Session':state.active.token};if(state.accessToken)headers.Authorization='Bearer '+state.accessToken;
     const response=await fetch('/api/sessions/'+state.active.id+'/question/stream',{method:'POST',headers,body:JSON.stringify({question})});
     if(response.status===401)$('access-dialog').showModal();
-    const view=await readQuestionStream(response,event=>{if(event.context){state.context=event.context;renderSessionPanels();}activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});},update=>preview.update(update));applyView(view);activity.finish();$('question').value='';
+    const view=await readQuestionStream(response,event=>{if(event.context){state.context=event.context;renderSessionPanels();}activity.update(event);inspector.updateRun(activity.snapshot(),{live:true});},update=>{if(update.context){state.context=update.context;renderSessionPanels();}preview.update(update);});applyView(view);activity.finish();$('question').value='';
     state.active.label=state.turns[0]?.question.slice(0,32)||'新对话';persist();renderSessions();
     if(state.turns.at(-1)?.status!=='completed')notice('本轮未完成，请检查模型服务。已发生的请求计入会话用量。',true);
   }catch(e){activity.finish(false);if(preview?.text){preview.interrupt();document.querySelector('.pending-question')?.classList.remove('pending-question');}else document.querySelector('.pending-question')?.remove();notice(e.message,true);}finally{busy(false);}

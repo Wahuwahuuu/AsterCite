@@ -18,7 +18,8 @@ import { traceInput,traceOutput,traceArguments,type ExecutionEvent } from "./exe
 import { selectedTargets,coverageInstruction,validateCoverage } from "./selected-scope.ts";
 import {abstractReadingSection,groundedGenerationMessages,withAbstractReading} from './paper-reading.ts';
 import {prepareWorkbenchAnswer,preferWorkbenchAnswer,workbenchCoverageInstruction,workbenchSystemPrompt,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer} from "./workbench-answer.ts";
-import {ContextTracker,compactionPolicy,estimateVisibleContext,type ContextView} from './workbench-context.ts';
+import {ContextTracker,compactionPolicy,estimateVisibleContext,sessionContextInput,reachedContextThreshold,type ContextView} from './workbench-context.ts';
+import {contextCut} from './context-compaction.ts';
 import {AnswerStreamer,type AnswerUpdate} from './answer-stream.ts';
 
 // Versioned main controls; historical prepared/session implementations remain frozen.
@@ -117,6 +118,8 @@ export class MainPaperHarness {
   private compactBeforeNextTurn = false;
   private contextTracker:ContextTracker;
   private answerStreamer:AnswerStreamer;
+  private lastContextAttempt='';
+  private contextIdle=true;
   private autonomousPreparation = false;
   private selectedRequired:string[]=[];
   private workbenchBest:{answer:WorkbenchAnswer;request:RequestRecord|undefined;evidence:Map<string,Chunk>}|undefined;
@@ -227,9 +230,10 @@ export class MainPaperHarness {
       if (!harness) throw new RuntimeFailure("NOT_READY", "Harness is not initialized");
       return harness;
     };
+    // Product compaction uses the same retained-context measurement as its meter.
     const settings = SettingsManager.inMemory({ cacheWarming: "off", retry: { enabled: false, maxRetries: 0,
       provider: { maxRetries: 0, timeoutMs: options.requestTimeoutMs ?? 90_000 } }, transport: "sse",
-      compaction: { enabled: controls.compaction === "native",...(options.answerPolicy==='workbench-v1'?{reserveTokens:compactionPolicy(options.model.contextWindow).reserve_tokens,keepRecentTokens:compactionPolicy(options.model.contextWindow).keep_recent_tokens}:{}) }, enableSkillCommands: false,
+      compaction: { enabled: options.answerPolicy==='workbench-v1'?false:controls.compaction === "native",...(options.answerPolicy==='workbench-v1'?{reserveTokens:compactionPolicy(options.model.contextWindow).reserve_tokens,keepRecentTokens:compactionPolicy(options.model.contextWindow).keep_recent_tokens}:{}) }, enableSkillCommands: false,
       enableInstallTelemetry: false, enableAnalytics: false });
     const { session, extensionsResult } = await createAgentSession({ cwd, agentDir: join(cwd, ".runtime", "pi"),
       model: options.model, thinkingLevel: options.model.reasoning ? options.thinkingLevel ?? "low" : "off", modelRuntime: options.modelRuntime,
@@ -367,6 +371,11 @@ export class MainPaperHarness {
         this.enterClosing("Exploration request allowance exhausted");
       }
       const instruction = this.stageInstruction()+"\n"+(this.workbench?workbenchCoverageInstruction:coverageInstruction)(this.selectedRequired,this.options.p2?.publicPapers??[]);
+      if(this.workbench){
+        let messages=normalizeContext({messages:convertToLlm(context.messages)}).messages;
+        if(this.compactContext('threshold',messages))messages=normalizeContext({messages:convertToLlm(this.session.messages)}).messages;
+        return {...previous,context:{...this.contextInput(messages,instruction),tools:this.session.agent.state.tools.slice()}};
+      }
       const memory = this.useDomainMemory ? [{ role: "system" as const, content: JSON.stringify(this.memory.projection()), timestamp: Date.now() }] : [];
       const projected = [...context.messages, ...memory, ...(instruction ? [{ role: "system" as const, content: instruction, timestamp: Date.now() }] : [])];
       return { ...previous, context: { ...context, tools: this.session.agent.state.tools.slice(),
@@ -847,6 +856,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       this.session.setActiveToolsByName([...TOOL_NAMES]);
     }
     this.ledger = ledger;
+    this.contextIdle=false;
     const abort = () => { ledger.fail("CANCELLED", new RuntimeFailure("CANCELLED", "User turn cancelled")); this.turnController?.abort(); void this.session.abort(); };
     const timer = setTimeout(() => { ledger.fail("TURN_TIMEOUT", new RuntimeFailure("TURN_TIMEOUT", "User turn timed out")); this.turnController?.abort(); void this.session.abort(); }, this.options.turnTimeoutMs ?? 180_000);
     signal?.addEventListener("abort", abort, { once: true });
@@ -859,10 +869,11 @@ Complete this retrieval batch through the declared tools. If separate queries ar
           const natural=this.settings.getCompactionSettings();
           ledger.record.compaction_control={trigger:"host_planned",keep_recent_tokens:this.workbench?natural.keepRecentTokens:50,natural_settings_restored:false};
           if(!this.workbench)this.settings.applyOverrides({compaction:{...natural,keepRecentTokens:50}});
-          try {await this.session.compact();}
+          try {if(this.workbench)this.compactContext('manual');else await this.session.compact();}
           catch(error){if(!this.workbench||!/Nothing to compact|Already compacted|session too small/iu.test(errorText(error,this.options.secrets)))throw error;}
           finally {this.settings.applyOverrides({compaction:natural});ledger.record.compaction_control!.natural_settings_restored=true;}
         }
+        if(this.workbench)this.compactContext('threshold');
         this.dialogue.push({ turn_id: userTurnId, user_text: userText, final_answer: "" });
       }
       if (this.r2 && this.options.p2?.profile === "B") {
@@ -930,7 +941,17 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       if (entry) entry.final_answer = result.final_answer;
     }
     if (this.options.p2?.profile === "B" && this.preparation.status === "error" && this.preparation.request_id === null) this.preparation.reason = result.error ?? this.preparation.reason;
-    const preparedResult: ControlledTurnRecord = { ...result,...(this.workbench?{answer_policy:'workbench-v1' as const}:{}), runtime_controls: { ...this.options.controls, auto_compaction_enabled: this.session.autoCompactionEnabled }, reliability_adaptations: structuredClone(this.adaptations), pipeline_trace: preparedPipelineTrace(result, userText, memoryBefore, structuredClone(this.memory.state), this.preparation),
+    if(this.workbench){
+      for(const entry of this.session.sessionManager.buildSessionProjection().entries)for(const message of entry.messages){
+        if(message.role!=='assistant')continue;
+        const content=message.content.filter(block=>block.type==='toolCall'||block.type==='text'&&this.finalAnswers.has(assistantSignature(message)));
+        if(content.length!==message.content.length)this.session.sessionManager.appendContextEdit(entry.sourceEntry.id,content.length?{content}:null);
+      }
+      this.session.agent.state.messages=this.session.sessionManager.buildSessionProjection().messages;
+      this.contextIdle=true;
+      if(!ledger.failureCode)this.compactContext('threshold');
+    }
+    const preparedResult: ControlledTurnRecord = { ...result,...(this.workbench?{answer_policy:'workbench-v1' as const}:{}), runtime_controls: { ...this.options.controls, auto_compaction_enabled: this.contextAutoEnabled }, reliability_adaptations: structuredClone(this.adaptations), pipeline_trace: preparedPipelineTrace(result, userText, memoryBefore, structuredClone(this.memory.state), this.preparation),
       runtime_family: "question-preparation-v1", question_preparation: structuredClone(this.preparation) };
     this.ledger = undefined;
     this.turnController = undefined; this.frame = undefined; this.check = undefined;
@@ -939,8 +960,43 @@ Complete this retrieval batch through the declared tools. If separate queries ar
 
   dispose(): void { this.session.dispose(); }
 
-  private contextSize():number{return estimateVisibleContext({messages:convertToLlm(this.session.messages),systemPrompt:this.session.agent.state.systemPrompt+'\n'+JSON.stringify(this.memory.projection()),tools:this.session.agent.state.tools});}
-  contextView():ContextView{return this.contextTracker.view(this.options.model.contextWindow,this.session.autoCompactionEnabled);}
+  private get contextAutoEnabled():boolean{return this.workbench?this.options.controls.compaction==='native':this.session.autoCompactionEnabled;}
+  private contextInput(messages?:Message[],instruction?:string){
+    if(!messages){
+      const retained=convertToLlm(this.session.sessionManager.buildSessionProjection().messages),streaming=this.session.agent.state.streamingMessage;
+      if(!this.contextIdle&&streaming?.role==='assistant'&&!retained.some(message=>message.role==='assistant'&&message.timestamp===streaming.timestamp))retained.push(streaming);
+      messages=normalizeContext({messages:retained,...(retained[0]?.role!=='system'?{systemPrompt:this.session.agent.state.systemPrompt,tools:this.session.agent.state.tools}:{})}).messages;
+    }
+    const extra=instruction??(this.ledger&&!this.contextIdle?this.stageInstruction()+'\n'+workbenchCoverageInstruction(this.selectedRequired,this.options.p2?.publicPapers??[]):'');
+    const projected=sessionContextInput(messages,this.useDomainMemory?this.memory.projection():undefined,extra);
+    if(this.contextIdle||!this.ledger?.closing)return JSON.parse(redactText(JSON.stringify(projected),this.options.secrets)) as TranscriptContext;
+    const streaming=this.session.agent.state.streamingMessage;
+    return JSON.parse(redactText(JSON.stringify(normalizeContext({messages:withoutToolDeclarations(groundedGenerationMessages(projected.messages,message=>message.role==='assistant'&&(this.finalAnswers.has(assistantSignature(message))||streaming?.role==='assistant'&&message.timestamp===streaming.timestamp)))})),this.options.secrets)) as TranscriptContext;
+  }
+  private contextSize():number{return estimateVisibleContext(this.contextInput());}
+  contextView():ContextView{if(this.workbench)this.contextTracker.retain(this.contextInput());return this.contextTracker.view(this.options.model.contextWindow,this.contextAutoEnabled);}
+  private compactContext(reason:'manual'|'threshold',messages?:Message[]):boolean{
+    if(!this.workbench||!this.contextAutoEnabled)return false;
+    const ledger=this.activeLedger(),input=this.contextInput(messages),before=estimateVisibleContext(input),window=this.options.model.contextWindow;
+    if(reason==='threshold'&&!reachedContextThreshold(before,window))return false;
+    const manager=this.session.sessionManager,signature=manager.getLeafId()+':'+before;
+    if(reason==='threshold'&&signature===this.lastContextAttempt)return false;this.lastContextAttempt=signature;
+    const projection=manager.buildSessionProjection(),id=randomUUID(),started=Date.now();
+    let first=contextCut(projection,compactionPolicy(window).keep_recent_tokens),summary='',nonreducing=false;
+    if(first){
+      summary=this.memory.summary(this.dialogue,this.useDomainMemory);
+      const preview=SessionManager.inMemory(this.options.cwd,undefined,[manager.getHeader()!,...manager.getBranch()]);
+      preview.appendCompaction(summary,first,before,{kind:'pipaper_deterministic_compaction_v1'},true);
+      if(estimateVisibleContext(this.contextInput(normalizeContext({messages:convertToLlm(preview.buildSessionProjection().messages)}).messages))>=before){first=undefined;summary='';nonreducing=true;}
+    }
+    ledger.record.compaction_events.push({type:'start',reason});this.contextTracker.begin(reason,before,this.session.messages.length);
+    this.trace({id,kind:'compaction',status:'running',stage:'compaction',phase:'compaction',origin:'host_plan',input:{reason,tokens_before:before,threshold_tokens:compactionPolicy(window).threshold_tokens}});
+    if(first){manager.appendCompaction(summary,first,before,{kind:'pipaper_deterministic_compaction_v1',summary_model_calls:0,context_policy:compactionPolicy(window).version},true);this.session.agent.state.messages=manager.buildSessionProjection().messages;}
+    const after=this.contextSize(),note=first?'已整理早期上下文并保留近期对话。':nonreducing?'摘要未能减少当前占用，已保留原上下文。':'近期内容较少，已按相同保留策略保留原上下文。';
+    this.contextTracker.end(after,this.session.messages.length,summary,first?'completed':'unchanged',note);ledger.record.compaction_events.push({type:'end',reason,aborted:false});
+    this.trace({id,kind:'compaction',status:'completed',stage:'compaction',phase:'compaction',origin:'host_plan',output:{text:JSON.stringify({reason,before_tokens:before,after_tokens:after,summary,note}),tool_calls:[]},elapsed_ms:Date.now()-started});
+    return Boolean(first);
+  }
 
   /** Scheduling is host-only; Pi compaction executes within the next turn's ledger. */
   requestCompaction(): void {
@@ -951,6 +1007,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
 
   snapshot(): ControlledSnapshot {
     if (!this.full || this.ledger) throw new RuntimeFailure("INVALID_SNAPSHOT", "Only an idle full-v1 session can be snapshotted");
+    if(this.workbench)this.contextView();
     const snapshot = { version: 1 as const, profile: this.options.p2!.profile, index_version: this.options.p2!.indexVersion,
       entries: safeSessionEntries(this.session.sessionManager, this.finalAnswers, this.options.secrets ?? []),
       domain_state: this.memory.state, dialogue: this.dialogue, final_signatures: [...this.finalAnswers],...(this.workbench?{answer_policy:'workbench-v1' as const,context_state:this.contextTracker.state}:{}) };

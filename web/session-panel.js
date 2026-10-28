@@ -14,7 +14,7 @@ export class SessionPanel {
   renderMeter(){
     const context=this.data.context,button=document.getElementById('context-open'),progress=document.getElementById('context-progress'),label=document.getElementById('context-label');
     button.hidden=this.data.mode!=='live';if(button.hidden)return;progress.value=Math.min(100,context?.percent??0);progress.setAttribute('aria-label','上下文占用');
-    const usageName=context?.stage==='compaction'?'压缩后上下文':context?.basis==='provider'?'最近主请求占用':'上下文估算';
+    const usageName='当前会话上下文';
     label.textContent=context?`${usageName} ${context.basis==='estimate'?'约 ':''}${number(context.used_tokens)} / ${number(context.window_tokens)} token${context.percent===null?'':' · '+context.percent.toFixed(1)+'%'} · ${context.auto_enabled?'80% 自动压缩':'自动压缩关闭'}`:'上下文用量待连接';
     button.title='查看当前上下文用量、保留策略和压缩前后对比';button.dataset.level=(context?.percent??0)>=80?'high':'normal';
   }
@@ -58,8 +58,8 @@ export class SessionPanel {
     const content=document.getElementById('compression-content');content.replaceChildren();const context=this.data.context;
     if(this.data.mode!=='live'||!context){content.append(node('p',null,'连接完整问答服务后，可查看上下文用量和压缩记录。'));return;}
     const policy=context.policy,stats=node('div','context-stats');
-    for(const [label,value] of [[context.basis==='provider'?'最近主请求占用':'上下文估算',(context.basis==='estimate'?'约 ':'')+number(context.used_tokens)+' token'],['上下文容量',number(context.window_tokens)+' token'],['剩余空间',number(context.remaining_tokens)+' token'],['自动触发',context.auto_enabled?'80% · '+number(policy.threshold_tokens)+' token':'已关闭']]){const stat=node('div');stat.append(node('span',null,label),node('strong',null,value));stats.append(stat);}content.append(stats);
-    content.append(node('p','panel-intro',context.basis==='provider'?'占用来自最近一次模型请求的输入与输出统计，不是整个会话的累计消耗。':context.basis==='estimate'?'当前用量为本地估算；模型返回用量后会更新。压缩前后统一使用本地估算比较。':'首次提问后开始统计当前上下文用量。'));
+    for(const [label,value] of [['当前会话占用',(context.basis==='estimate'?'约 ':'')+number(context.used_tokens)+' token'],['上下文容量',number(context.window_tokens)+' token'],['剩余空间',number(context.remaining_tokens)+' token'],['自动触发',context.auto_enabled?'80% · '+number(policy.threshold_tokens)+' token':'已关闭']]){const stat=node('div');stat.append(node('span',null,label),node('strong',null,value));stats.append(stat);}content.append(stats);
+    content.append(node('p','panel-intro','按当前保留并准备发送的上下文估算，包括系统提示、对话、工具与检索结果、记忆和压缩摘要。自动压缩使用同一数值，达到 80% 时在安全边界执行。'));
     content.append(node('p',null,`手动和自动压缩使用相同策略：保留约 ${number(policy.keep_recent_tokens)} token 的近期对话，将早期内容整理为摘要，并保留论文对象、回答偏好与对话摘记。完整聊天记录仍可查看。`));
     const action=node('button','primary-button',this.data.pending?'取消已安排的压缩':'安排下一问前压缩');action.type='button';action.disabled=this.data.busy||!context.auto_enabled;action.addEventListener('click',()=>void this.onSchedule(!this.data.pending));content.append(action);
     content.append(node('p',this.data.pending?'compression-pending':'panel-intro',this.data.pending?'已安排：将在下一次提问前执行，完成后会显示实际对比。':'压缩会在下一问前执行；近期内容不足时会保留原上下文。'));

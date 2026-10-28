@@ -35,6 +35,7 @@
   "agent/worker-client.ts",
   "agent/workbench-answer.ts",
   "agent/workbench-context.ts",
+  "agent/context-compaction.ts",
   "agent/paper-reading.ts",
   "agent/citation-attribution.ts",
   "configs/model.example.json",

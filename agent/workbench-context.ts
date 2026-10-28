@@ -1,31 +1,44 @@
 import {randomUUID} from 'node:crypto';
 import {traceInput,type TraceInput} from './execution-trace.ts';
 import type {ObservedUsage} from './ledger.ts';
+import {normalizeContext,getCurrentSystemMessage,getCurrentSystemPrompt,getCurrentTools,type Message,type Context} from '@earendil-works/pi-ai';
 
-export const CONTEXT_POLICY='workbench-context-v1';
+export const CONTEXT_POLICY='workbench-context-v2';
 export function compactionPolicy(window:number){
-  const threshold=Math.floor(window*.8);
+  const threshold=Math.ceil(window*.8);
   return {version:CONTEXT_POLICY,threshold_percent:80,threshold_tokens:threshold,reserve_tokens:window-threshold,keep_recent_tokens:Math.min(8192,Math.max(256,Math.floor(window*.25)))};
 }
 export interface ContextSample {tokens:number;basis:'provider'|'estimate';stage:string;updated_at:string;input_tokens?:number;output_tokens?:number}
 export interface CompressionRecord {id:string;reason:string;status:'completed'|'unchanged'|'error';started_at:string;finished_at:string;before_tokens:number;after_tokens:number;before_messages:number;after_messages:number;summary:string;note:string}
-export interface ContextState {latest?:ContextSample;compressions:CompressionRecord[]}
+export interface ContextState {latest?:ContextSample;last_request?:ContextSample;compressions:CompressionRecord[]}
 export interface ContextView {window_tokens:number;used_tokens:number|null;remaining_tokens:number|null;percent:number|null;basis:'provider'|'estimate'|'unknown';stage:string|null;updated_at:string|null;auto_enabled:boolean;policy:ReturnType<typeof compactionPolicy>;compressions:CompressionRecord[]}
 const textTokens=(text:string)=>{const wide=[...text].filter(ch=>(ch.codePointAt(0)??0)>255).length;return Math.ceil((text.length-wide)/4+wide);};
 /** Visible request fields only; hidden reasoning and credentials never enter telemetry. */
 export function estimateVisibleContext(value:unknown):number{
-  const input=traceInput(value,'sdk_context'),system=(value as {systemPrompt?:unknown})?.systemPrompt;
-  return (typeof system==='string'?textTokens(system):0)+input.messages.reduce((n,m)=>n+6+textTokens(m.text)+textTokens(JSON.stringify(m.tool_calls??[])),0)+textTokens(JSON.stringify(input.tools));
+  const source=value as Partial<TraceInput>;
+  let input:TraceInput;
+  if(source.format&&source.messages?.every(message=>typeof message.text==='string'))input=source as TraceInput;
+  else{
+    const context=normalizeContext(value as Context),system=getCurrentSystemMessage(context.messages);
+    input=traceInput({messages:[...(system?[{...system,content:getCurrentSystemPrompt(context.messages)}]:[]),...context.messages.filter(message=>message.role!=='system')],tools:getCurrentTools(context.messages)},'sdk_context');
+  }
+  return input.messages.reduce((n,m)=>n+6+textTokens(m.text)+textTokens(JSON.stringify(m.tool_calls??[])),0)+textTokens(JSON.stringify(input.tools));
 }
+/** One projection supplies both the actual main request and the session meter. */
+export function sessionContextInput(messages:readonly Message[],memory?:unknown,instruction=''){
+  return normalizeContext({messages:[...messages,...(memory?[{role:'system' as const,content:JSON.stringify(memory),timestamp:0}]:[]),...(instruction?[{role:'system' as const,content:instruction,timestamp:0}]:[])]});
+}
+export function reachedContextThreshold(tokens:number,window:number):boolean{return tokens>=compactionPolicy(window).threshold_tokens;}
 export class ContextTracker {
   readonly state:ContextState;
   private active?:{reason:string;started_at:string;tokens:number;messages:number};
   constructor(saved?:ContextState){this.state=structuredClone(saved??{compressions:[]});}
-  request(input:TraceInput,stage:string){this.state.latest={tokens:estimateVisibleContext(input),basis:'estimate',stage,updated_at:new Date().toISOString()};}
+  request(input:TraceInput,stage:string){this.state.last_request={tokens:estimateVisibleContext(input),basis:'estimate',stage,updated_at:new Date().toISOString()};}
+  retain(input:unknown,stage='session'){this.state.latest={tokens:estimateVisibleContext(input),basis:'estimate',stage,updated_at:new Date().toISOString()};}
   response(usage:ObservedUsage,stage:string){
     if(usage.input===null||usage.output===null)return;
     const input=usage.input+(usage.cacheRead??0)+(usage.cacheWrite??0);
-    this.state.latest={tokens:input+usage.output,basis:'provider',stage,updated_at:new Date().toISOString(),input_tokens:input,output_tokens:usage.output};
+    this.state.last_request={tokens:input+usage.output,basis:'provider',stage,updated_at:new Date().toISOString(),input_tokens:input,output_tokens:usage.output};
   }
   begin(reason:string,tokens:number,messages:number){this.active={reason,started_at:new Date().toISOString(),tokens,messages};}
   end(tokens:number,messages:number,summary:string,status:CompressionRecord['status'],note:string){

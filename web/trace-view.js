@@ -17,7 +17,7 @@ function code(value){
 }
 export function renderTrace(root,detail){
   const tab=root.dataset.tab||'input';root.replaceChildren();
-  const head=node('header','trace-head');head.append(node('h1',null,detail.kind==='tool'?`工具调用 · ${detail.tool}`:detail.stage==='source_translation'?'原文翻译请求':`第 ${detail.cycle??1} 次模型请求`),node('p',null,`${detail.playback_pending?'请求进行中（回放位置）':detail.status==='running'?'正在执行':detail.status==='error'?'执行未完成':'执行完成'} · ${detail.stage} · ${detail.origin==='host_plan'?'由检索计划发起':detail.kind==='tool'?'由模型发起':'模型调用'}`));root.append(head);
+  const head=node('header','trace-head');head.append(node('h1',null,detail.kind==='compaction'?'会话上下文压缩':detail.kind==='tool'?`工具调用 · ${detail.tool}`:detail.stage==='source_translation'?'原文翻译请求':`第 ${detail.cycle??1} 次模型请求`),node('p',null,`${detail.playback_pending?'请求进行中（回放位置）':detail.status==='running'?'正在执行':detail.status==='error'?'执行未完成':'执行完成'} · ${detail.stage} · ${detail.kind==='compaction'?'会话整理':detail.origin==='host_plan'?'由检索计划发起':detail.kind==='tool'?'由模型发起':'模型调用'}`));root.append(head);
   const tabs=node('nav','trace-tabs');tabs.setAttribute('aria-label','请求详情');
   const panels={input:node('section','trace-section'),output:node('section','trace-section'),tools:node('section','trace-section')};
   for(const [id,label] of [['input',detail.kind==='tool'?'调用参数':'输入上下文'],['output',detail.kind==='tool'?'工具返回':'模型输出'],['tools','工具与请求信息']]){

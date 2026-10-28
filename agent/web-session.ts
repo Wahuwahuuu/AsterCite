@@ -11,7 +11,7 @@ import type { Assets } from "./assets.ts";
 import type { ExecutionEvent } from "./execution-trace.ts";
 import type { PaperCoverage } from "./selected-scope.ts";
 import {corpusAbstracts} from './paper-reading.ts';
-import {ContextTracker,type ContextView} from './workbench-context.ts';
+import type {ContextView} from './workbench-context.ts';
 import type {ReadingNote} from './domain-memory.ts';
 import type {AnswerUpdate} from './answer-stream.ts';
 
@@ -19,7 +19,7 @@ export interface WebSource { chunk_id:string; paper_id:string; title:string; sec
 export interface WebExecutionDetail extends ExecutionEvent {turn_id:string;cycle:number;elapsed_ms:number;turn_elapsed_ms:number;started_at:string}
 export interface WebActivity { id:string; kind:"model"|"tool"|"memory"|"compaction"; status:"running"|"completed"|"error"; label:string; detail:string; elapsed_ms:number; tool?:"search_papers"|"retrieve_chunks";turn_id?:string;cycle?:number;parent_id?:string;origin?:"model"|"host_plan";has_details?:boolean;context?:ContextView }
 export type ProgressListener=(activity:WebActivity)=>void;
-export type AnswerListener=(update:AnswerUpdate&{sources:WebSource[]})=>void;
+export type AnswerListener=(update:AnswerUpdate&{sources:WebSource[];context?:ContextView})=>void;
 export interface WebTurn { question:string; answer:string; status:string; sources:WebSource[]; elapsed_ms:number; requests:number; tokens:number|null; stages:Array<{stage:string;status:string}>; activity?:WebActivity[];turn_id?:string;coverage?:PaperCoverage[] }
 export interface WebView {
   turns:WebTurn[]; scope:string[]; pending_compaction:boolean;
@@ -84,7 +84,7 @@ export class PaperWebSession implements WebSessionPort {
     this.traceDetails.set(event.id,value);
     const preparing=["question_preparation","question_frame"].includes(event.stage);
     const readingAbstract=(value.input as {section?:string}|undefined)?.section==='abstract'||value.output?.text.includes('"backend":"corpus_abstract_v1"');
-    const label=event.kind==="tool"?event.tool==="search_papers"?"查找论文":readingAbstract?"读取摘要原文":"检索与重排原文":preparing?"理解问题与改写查询":event.stage==="citation_repair"?"修正回答与引用":event.phase==="compaction"?"压缩会话上下文":["generate","closing"].includes(event.stage)?"依据原文整理回答":"分析证据与选择行动";
+    const label=event.kind==='compaction'?'压缩会话上下文':event.kind==="tool"?event.tool==="search_papers"?"查找论文":readingAbstract?"读取摘要原文":"检索与重排原文":preparing?"理解问题与改写查询":event.stage==="citation_repair"?"修正回答与引用":event.phase==="compaction"?"压缩会话上下文":["generate","closing"].includes(event.stage)?"依据原文整理回答":"分析证据与选择行动";
     let detail=event.kind==="model"?event.status==="running"?"查看本轮模型上下文与请求内容":"查看模型可见输出与工具选择":"";
     if(event.kind==="tool"){
       const input=value.input as {query?:string;paper_ids?:string[]}|undefined;
@@ -134,7 +134,7 @@ export class PaperWebSession implements WebSessionPort {
       knownPaperIds:new Set(this.assets.publicPapers.map(p=>p.paper_id)),secrets:[this.key],thinkingLevel:this.config.model.thinking_level,
       questionPreparation:"light-v1" as const,answerPolicy:'workbench-v1' as const,controls:this.controls,selectedScopeCoverage:true,onExecutionEvent:(event:ExecutionEvent)=>this.observe(event),onAnswerUpdate:(update:AnswerUpdate)=>{
         const sources=update.source_ids.flatMap(id=>{const source=this.sources.get(id);return source?[{chunk_id:id,paper_id:source.paper_id,title:this.assets.publicPapers.find(p=>p.paper_id===source.paper_id)?.title??source.paper_id,section:source.section,text:source.text}]:[];});
-        this.onAnswer?.(JSON.parse(redactText(JSON.stringify({...update,sources}),[this.key])));
+        this.onAnswer?.(JSON.parse(redactText(JSON.stringify({...update,sources,context:this.harness?.contextView()}),[this.key])));
       },
       p2:{profile:"B" as const,executionVersion:"full-v1" as const,indexVersion:this.assets.indexVersion,evidenceIndex:this.assets.evidenceIndex,
         publicPapers:this.assets.publicPapers,commonPrompt:this.assets.commonPrompt,nlu:true,reflect:false,structuredMemory:true,answerContract:"full-v1-json" as const,
@@ -154,9 +154,9 @@ export class PaperWebSession implements WebSessionPort {
     return this.harness;
   }
   async view():Promise<WebView>{
-    const state=this.harness?.memory.state??this.snapshot?.state.domain_state;
+    const harness=await this.getHarness(),state=harness.memory.state;
     const view:WebView={turns:structuredClone(this.history),scope:[...this.budget.state.scope],pending_compaction:this.budget.state.pending_compaction,
-      budget:this.budget.summary(),context:this.harness?.contextView()??new ContextTracker(this.snapshot?.state.context_state).view(this.config.model.context_window,this.config.session.compaction==='native'),memory:{paper_id:state?.current_paper?.paper_id??null,comparison:state?.comparison_order??[],dimensions:state?.comparison_dimensions??[],
+      budget:this.budget.summary(),context:harness.contextView(),memory:{paper_id:state?.current_paper?.paper_id??null,comparison:state?.comparison_order??[],dimensions:state?.comparison_dimensions??[],
         preferences:state?.user_constraints.filter(p=>p.superseded_by===null).map(p=>({key:p.key,value:p.value,source_turn:p.source_turn,source_quote:p.source_quote}))??[],notes:structuredClone(state?.reading_notes??[]),unresolved:structuredClone(state?.unresolved_questions??[]),findings:state?.conclusions.filter(item=>item.source_status==='verified').slice(-24).map(item=>({text:item.text,source_turn:item.source_turn}))??[],inferences:state?.pending_inferences.slice(-12).map(item=>({text:item.text,source_turn:item.source_turn}))??[],object_source_turn:state?.object_source_turn??null}};
     return JSON.parse(redactText(JSON.stringify(view),[this.key])) as WebView;
   }

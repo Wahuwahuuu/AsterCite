@@ -151,7 +151,7 @@ test("website adapter runs the existing Harness, saves citations and restores me
     assert.equal(first.memory.notes?.[0].source_turn,first.turns[0].turn_id);assert.ok(first.memory.notes?.[0].answer_excerpt.includes('source supports'));assert.equal(first.context?.policy.threshold_percent,80);assert.ok(events.some(event=>event.context?.used_tokens!==null&&event.context?.used_tokens!==undefined));
     await session.close();session=await PaperWebSession.open(options);const restored=await session.view();
     assert.equal(restored.turns.length,1);assert.deepEqual(restored.scope,["p1"]);assert.equal(restored.memory.paper_id,"p1");
-    assert.deepEqual(restored.memory.notes,first.memory.notes);assert.deepEqual(restored.context?.used_tokens,first.context?.used_tokens);
+    assert.deepEqual(restored.memory.notes,first.memory.notes);assert.equal(restored.context?.basis,'estimate');assert.ok(restored.context!.used_tokens!>0);assert.equal(restored.context?.policy.version,'workbench-context-v2');
     assert.deepEqual(restored.turns[0].activity,first.turns[0].activity);
     const second=await session.ask("And the same fact?");assert.equal(second.turns.length,2);assert.equal(second.budget.turns_reserved,2);assert.equal(second.budget.model_attempts,4);
     await session.close();

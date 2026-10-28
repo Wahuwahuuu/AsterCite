@@ -1,27 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {fauxAssistantMessage as reply,fauxToolCall as call,type Api,type Model} from '@earendil-works/pi-ai';
-import {shouldCompact} from '@earendil-works/pi-coding-agent';
-import {ContextTracker,compactionPolicy,estimateVisibleContext} from '../../agent/workbench-context.ts';
+import {SessionManager} from '@earendil-works/pi-coding-agent';
+import {ContextTracker,compactionPolicy,estimateVisibleContext,reachedContextThreshold,sessionContextInput} from '../../agent/workbench-context.ts';
 import {traceInput} from '../../agent/execution-trace.ts';
 import {DomainMemory} from '../../agent/domain-memory.ts';
 import {mainFixture,preparation,SOURCE_IDS} from './main-fixture.ts';
+import {contextCut} from '../../agent/context-compaction.ts';
+import {wrapSnapshot} from '../../agent/main-controls.ts';
 const controls={arm:'C',reflect:false,compaction:'native',reliability:'candidate',implementation_id:'1'.repeat(64)} as const;
 
 test('product compaction crosses 80 percent and reserves the same recent context for either trigger',()=>{
-  const policy=compactionPolicy(32768);assert.equal(policy.threshold_tokens,26214);assert.equal(policy.keep_recent_tokens,8192);
-  const settings={enabled:true,reserveTokens:policy.reserve_tokens,keepRecentTokens:policy.keep_recent_tokens};
-  assert.equal(shouldCompact(26214,32768,settings),false);assert.equal(shouldCompact(26215,32768,settings),true);
+  const policy=compactionPolicy(32768);assert.equal(policy.threshold_tokens,26215);assert.equal(policy.keep_recent_tokens,8192);
+  assert.equal(reachedContextThreshold(26214,32768),false);assert.equal(reachedContextThreshold(26215,32768),true);
   assert.equal(compactionPolicy(8192).keep_recent_tokens,2048);
 });
 
-test('current context uses one request including cache, not cumulative charges, and survives restoration',()=>{
+test('current session occupancy comes from retained content and is never overwritten by request usage',()=>{
   const tracker=new ContextTracker(),payload=traceInput({messages:[{role:'user',content:'Visible question'}]},'provider_payload');
-  tracker.request(payload,'generate');assert.equal(tracker.view(32768,true).basis,'estimate');
+  tracker.retain(payload);const retained=tracker.view(32768,true).used_tokens;tracker.request(payload,'generate');assert.equal(tracker.view(32768,true).basis,'estimate');
   tracker.response({input:1000,output:100,cacheRead:300,cacheWrite:200,reasoning:null,totalTokens:1600},'generate');
-  assert.equal(tracker.view(32768,true).used_tokens,1600);
+  assert.equal(tracker.view(32768,true).used_tokens,retained);assert.equal(tracker.state.last_request?.tokens,1600);
   tracker.response({input:500,output:50,cacheRead:0,cacheWrite:0,reasoning:null,totalTokens:550},'generate');
-  assert.equal(tracker.view(32768,true).used_tokens,550);assert.equal(tracker.view(32768,true).remaining_tokens,32218);
+  assert.equal(tracker.view(32768,true).used_tokens,retained);assert.equal(tracker.state.last_request?.tokens,550);
+  tracker.retain({messages:[{role:'user',content:[{type:'text',text:'新增对话内容。'.repeat(100)}]}]});assert.ok(tracker.view(32768,true).used_tokens!>retained!);
   assert.deepEqual(new ContextTracker(tracker.state).view(32768,true),tracker.view(32768,true));
   const base={messages:[{role:'assistant',content:[{type:'text',text:'Visible'}]}]};
   assert.equal(estimateVisibleContext({...base,headers:{Authorization:'private'},messages:[{role:'assistant',content:[...base.messages[0].content,{type:'thinking',thinking:'hidden'.repeat(10000)}]}]}),estimateVisibleContext(base));
@@ -66,13 +68,46 @@ test('manual compression uses the configured retention, records real before/afte
   }finally{f.harness.dispose();}
 });
 
-test('native automatic compression uses the product 80 percent policy and persists its result',async()=>{
+test('automatic compression uses actual retained context at 80 percent and persists its result',async()=>{
   const seed=await mainFixture([]);const model={...seed.harness.session.model!,contextWindow:32768,maxTokens:4096} as Model<Api>;seed.harness.dispose();
   const f=await mainFixture([reply(JSON.stringify(preparation)),reply(`原文说明 [cite:${SOURCE_IDS[0]}]。`)],[[0]],{answerPolicy:'workbench-v1',controls,model});
   try{
-    assert.equal(f.harness.settings.getCompactionSettings().reserveTokens,6554);
+    assert.equal(f.harness.settings.getCompactionSettings().reserveTokens,6553);
+    assert.equal(f.harness.session.autoCompactionEnabled,false);assert.equal(f.harness.contextView().auto_enabled,true);
     for(let i=0;i<10;i++)await f.harness.session.sendCustomMessage({customType:'visible-history-fixture',content:'History description. '.repeat(520)+i,display:false},{triggerTurn:false});
     const record=await f.harness.runTurn('解释论文',['p1'],'automatic');assert.equal(record.status,'completed',record.error??'');assert.equal(record.requests.length,2);
     const compression=f.harness.contextView().compressions.find(item=>item.reason==='threshold');assert.equal(compression?.status,'completed',JSON.stringify({events:record.compaction_events,window:f.harness.session.model?.contextWindow,records:f.harness.contextView().compressions.map(c=>({reason:c.reason,status:c.status}))}));assert.ok(compression!.before_tokens>compression!.after_tokens);assert.equal(f.harness.contextView().policy.threshold_percent,80);
   }finally{f.harness.dispose();}
+});
+
+test('context estimation counts complete messages, folded system changes, tools, memory and actual edits',()=>{
+  const input=sessionContextInput([{role:'system',content:'base prompt',timestamp:0,toolsAdded:[{name:'search_papers',description:'search',parameters:{type:'object'}}]},{role:'user',content:[{type:'text',text:'原始问题'}],timestamp:1}],{notes:['记忆内容'.repeat(100)]});
+  const plain=estimateVisibleContext({messages:[{role:'user',content:[{type:'text',text:'原始问题'}]}]});assert.ok(estimateVisibleContext(input)>plain+100);
+  const trace=traceInput(input,'sdk_context');assert.ok(estimateVisibleContext(trace)>plain,'already-projected TraceInput text is counted');
+});
+
+test('the displayed retained count is the threshold decision input, even after a tiny provider response',async()=>{
+  const seed=await mainFixture([]);const model={...seed.harness.session.model!,contextWindow:32768,maxTokens:4096} as Model<Api>;seed.harness.dispose();
+  const starts:Array<{decision:number;display:number|null}>=[];
+  const f=await mainFixture([reply(JSON.stringify(preparation)),reply(`第一轮说明 [cite:${SOURCE_IDS[0]}]。`),reply(JSON.stringify(preparation)),reply(`第二轮说明 [cite:${SOURCE_IDS[0]}]。`)],[[0]],{answerPolicy:'workbench-v1',controls,model,onExecutionEvent:event=>{if(event.kind==='compaction'&&event.status==='running')starts.push({decision:Number((event.input as Record<string,unknown>|undefined)?.tokens_before),display:f.harness.contextView().used_tokens});}});
+  let snapshot;
+  try{
+    await f.harness.runTurn('先说明论文',['p1'],'small-response');const small=f.harness.contextView().used_tokens!;
+    const manager=f.harness.session.sessionManager,edited=manager.appendMessage({role:'user',content:[{type:'text',text:'待删除历史。'.repeat(1000)}],timestamp:1});
+    const enlarged=f.harness.contextView().used_tokens!;assert.ok(enlarged>small);manager.appendContextEdit(edited,null);assert.equal(f.harness.contextView().used_tokens,small);
+    for(let i=0;i<10;i++)await f.harness.session.sendCustomMessage({customType:'retained-history',content:'历史上下文内容。'.repeat(400)+i,display:false},{triggerTurn:false});
+    assert.ok(f.harness.contextView().used_tokens!>=26215);
+    const record=await f.harness.runTurn('继续说明论文',['p1'],'large-retained');assert.equal(record.status,'completed',record.error??'');assert.equal(record.requests.length,2);
+    assert.ok(starts.length>0);assert.ok(starts.every(start=>start.decision===start.display));
+    assert.ok(f.harness.contextView().used_tokens!<26215);snapshot=f.harness.snapshot();snapshot.state.context_state!.latest!.tokens=1;snapshot=wrapSnapshot(snapshot.state,controls);
+  }finally{f.harness.dispose();}
+  const restored=await mainFixture([],[[]],{answerPolicy:'workbench-v1',controls,model,controlledSnapshot:snapshot});
+  try{assert.ok(restored.harness.contextView().used_tokens!>1);assert.equal(restored.harness.contextView().basis,'estimate');}finally{restored.harness.dispose();}
+});
+
+test('compaction boundaries preserve an assistant tool call with its trailing result',()=>{
+  const manager=SessionManager.inMemory(process.cwd());manager.appendMessage({role:'user',content:[{type:'text',text:'Older history. '.repeat(300)}],timestamp:1});
+  const tool=call('retrieve_chunks',{query:'source',paper_ids:['p1']}),callId=manager.appendMessage(reply([tool],{stopReason:'toolUse'}));
+  manager.appendMessage({role:'toolResult',toolCallId:tool.id,toolName:'retrieve_chunks',content:[{type:'text',text:'Current source. '.repeat(1000)}],isError:false,timestamp:2});
+  assert.equal(contextCut(manager.buildSessionProjection(),32),callId);
 });

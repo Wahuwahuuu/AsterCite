@@ -4,7 +4,7 @@ export interface TraceMessage { role:string; text:string; tool_call_id?:string; 
 export interface TraceInput { format:"provider_payload"|"sdk_context"; messages:TraceMessage[]; tools:Array<{name:string;description:string;parameters:unknown}>; settings:Record<string,string|number|boolean> }
 export interface TraceOutput { text:string; tool_calls:Array<{id:string;name:string;arguments:unknown}>; stop_reason?:string }
 export interface ExecutionEvent {
-  id:string;kind:"model"|"tool";status:"running"|"completed"|"error";stage:string;phase:string;
+  id:string;kind:"model"|"tool"|"compaction";status:"running"|"completed"|"error";stage:string;phase:string;
   parent_id?:string;origin?:"model"|"host_plan";tool?:"search_papers"|"retrieve_chunks";
   input?:TraceInput|Record<string,unknown>;output?:TraceOutput;elapsed_ms?:number;
 }
