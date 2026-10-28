@@ -147,6 +147,7 @@ export class MainPaperHarness {
   private executionTracker=new TurnExecutionTracker();
   private currentExecution:TurnExecution|undefined;
   private completionChecks=0;
+  private completionFeedback?:{requires_sources:boolean;visible_source_count:number;cited_source_count:number;issues:string[];available_sources:Array<{paper_id:string;chunk_id:string}>};
   private tasks?:TaskProgressTracker;
   private trace(event:ExecutionEvent):void{try{const safe=JSON.parse(redactText(JSON.stringify(event),this.options.secrets));this.tasks?.event(safe);this.options.onExecutionEvent?.(safe);}catch{/* 展示不能改变问答结果。 */}}
   private autonomousEvidenceBefore = new Set<string>();
@@ -291,8 +292,13 @@ export class MainPaperHarness {
       const ledger = this.activeLedger();
       const optional=this.workbench&&['long_term_memory','turn_completion'].includes(ledger.stage);
       const requestFailure=(code:string,error:unknown)=>{if(!optional)ledger.fail(code,error);};
-      const finalOnly = this.options.p2 && ledger.phase === "agent" && ["generate", "closing", "citation_repair"].includes(ledger.stage);
-      const project=(value:TranscriptContext)=>{const projected=finalOnly?normalizeContext({messages:withoutToolDeclarations(this.workbench?groundedGenerationMessages(value.messages,message=>message.role==='assistant'&&this.finalAnswers.has(assistantSignature(message))):value.messages)}):value;return this.workbench?currentProviderContext(projected):projected;};
+      const finalOnly = this.options.p2 && ledger.phase === "agent" && (this.workbench?ledger.closing:["generate", "closing", "citation_repair"].includes(ledger.stage));
+      const project=(value:TranscriptContext)=>{
+        const readOriginal=this.workbench&&ledger.phase==='agent'&&ledger.record.tools.some(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed&&tool.status==='completed'&&tool.chunk_ids.length);
+        const messages=this.workbench&&(finalOnly||readOriginal)?groundedGenerationMessages(value.messages,message=>!ledger.closing||message.role==='assistant'&&this.finalAnswers.has(assistantSignature(message))):value.messages;
+        const projected=finalOnly?normalizeContext({messages:withoutToolDeclarations(messages)}):{...value,messages};
+        return this.workbench?currentProviderContext(projected):projected;
+      };
       let providerContext=project(context);
       const requestedTokens=options?.maxTokens??(this.full?this.options.p2?.stageOutputLimits?.generation??4096:4096);
       let capacity=this.workbench?requestCapacity(estimateVisibleContext(providerContext),model.contextWindow,requestedTokens,model.maxTokens):undefined;
@@ -406,7 +412,7 @@ export class MainPaperHarness {
     this.session.setActiveToolsByName([]);
   }
 
-  private continueWorkbenchGeneration():void{
+  private continueWorkbenchLoop():void{
     const ledger=this.activeLedger();
     if(ledger.closing||ledger.remainingRequests<=1||!this.availableTools().length){this.enterClosing('Tool or exploration allowance exhausted; finish with current evidence and state remaining gaps','generate');return;}
     ledger.phase='agent';ledger.stage='generate';this.batchReservations=0;
@@ -469,7 +475,7 @@ export class MainPaperHarness {
       const previous = await previousPrepare?.(request, signal);
       const context = previous?.context ?? request.context;
       const ledger = this.activeLedger();
-      if (ledger.requestCount >= ledger.maxRequests - 1 && !["generate", "closing", "citation_repair"].includes(ledger.stage)) {
+      if (ledger.requestCount >= ledger.maxRequests - 1 && (this.workbench?!ledger.closing:!["generate", "closing", "citation_repair"].includes(ledger.stage))) {
         this.enterClosing("Exploration request allowance exhausted");
       }
       const instruction = this.stageInstruction()+"\n"+(this.workbench?workbenchCoverageInstruction:coverageInstruction)(this.selectedRequired,this.options.p2?.publicPapers??[]);
@@ -536,7 +542,7 @@ export class MainPaperHarness {
         if(!toolCalls.length)return this.finishAnswer(output);
         if(output)ledger.record.internal_drafts!.push(output);
         try{if(turn.toolResults.some(result=>result.toolName==='retrieve_chunks'))await this.completeFullReflect(signal);
-          else this.continueWorkbenchGeneration();}
+          else this.continueWorkbenchLoop();}
         catch(error){ledger.fail(error instanceof RuntimeFailure?error.code:'CHECK_ERROR',error);return {action:'end'};}
         return {action:'continue'};
       }
@@ -650,7 +656,7 @@ export class MainPaperHarness {
 
   private captureWorkbenchAnswer(output:string):WorkbenchAnswer|null{
     const ledger=this.activeLedger(),intent=(this.frame as FullFrame|undefined)?.intent;
-    const expectedKind=this.currentExecution?.needs_sources?'paper_fact':this.workbench&&isMemorySessionInput(this.input)?'session_control':intent&&!this.autonomousPreparation?intent==='session_control'?'session_control':intent==='paper_discovery'?'catalog':'paper_fact':undefined;
+    const expectedKind=this.currentExecution?.needs_sources?'paper_fact':this.workbench&&isMemorySessionInput(this.input)||intent==='session_control'?'session_control':intent==='paper_discovery'?'catalog':intent&&!this.autonomousPreparation?'paper_fact':undefined;
     const candidate=prepareWorkbenchAnswer(output,{evidence:this.lastMainEvidence,expectedKind,
       allowAnswer:!this.check?.checks.some(need=>need.status!=='supported')&&(!this.comparison||this.comparison.complete),requiredPapers:this.selectedRequired,papers:this.options.p2?.publicPapers,truncated:this.workbenchTruncated,execution:this.currentExecution});
     if(!candidate)return null;
@@ -663,7 +669,7 @@ export class MainPaperHarness {
   private finishWorkbenchAnswer(output:string):AgentTurnDecision{
     const ledger=this.activeLedger(),candidate=this.captureWorkbenchAnswer(output);
     if(!candidate){if(this.workbenchBest)return this.acceptWorkbenchAnswer();throw new RuntimeFailure('ANSWER_SCHEMA_ERROR','The model returned no readable answer text');}
-    if(candidate.needsCitationRepair&&!this.generationRepair&&ledger.remainingRequests>=1){
+    if(candidate.needsCitationRepair&&!this.generationRepair&&!this.completionFeedback&&ledger.remainingRequests>=1){
       const error=`Citation attribution problems: ${JSON.stringify(candidate.citationIssues)}. Check the actual source of EACH factual statement and numeric result, not merely whether a chunk ID exists. Never use an unrelated paragraph from the same paper. Preserve supported content; remove unsupported reported numbers or clearly state the gap. A corrected citation must support the actual claim; matching a number alone is insufficient.`;
       (ledger.record.generation_failures??=[]).push({code:'INVALID_CITATION',error,response_text:Array.from(output).slice(0,16000).join(''),request_id:this.lastMainRequest?.request_id??null});
       this.generationRepair={original:output,error,code:'INVALID_CITATION'};this.enterClosing('One source-link correction; an existing answer is retained','citation_repair');return {action:'continue'};
@@ -700,18 +706,26 @@ export class MainPaperHarness {
     const ledger=this.activeLedger(),intent=(this.frame as FullFrame|undefined)?.intent;
     const preview=prepareWorkbenchAnswer(output,{evidence:this.lastMainEvidence,allowAnswer:true,expectedKind:isMemorySessionInput(this.input)||intent==='session_control'?'session_control':intent==='paper_discovery'?'catalog':undefined});
     let declared=executionFromOutput(output)??await this.completionCheck(output,signal);
-    if(!declared)declared={state:preview?.value.status==='clarification'?'clarification':preview?.value.status==='partial'?'partial':'complete',remaining_needs:[],needs_sources:false,origin:'host'};
+    if(!declared)declared={state:preview?.value.status==='clarification'?'clarification':preview?.value.status==='partial'?'partial':'complete',remaining_needs:[],origin:'host'};
     if(preview?.value.status==='refusal'||preview?.value.status==='clarification')declared={...declared,needs_sources:false,state:preview.value.status==='clarification'?'clarification':declared.state};
     if(!preview)declared={...declared,state:'working',remaining_needs:['形成当前问题的可读回答']};
+    const exempt=preview?.value.status==='refusal'||preview?.value.status==='clarification';
+    const researchTask=Boolean(intent&&!['session_control','paper_discovery'].includes(intent));
+    const requiresSources=!exempt&&(researchTask||preview?.value.answer_kind==='paper_fact'||declared.needs_sources===true);
+    const issues=exempt?[]:preview?.citationIssues??[],citedCount=preview?.visibleCitationCount??0;
+    this.completionFeedback={requires_sources:requiresSources,visible_source_count:this.lastMainEvidence.size,cited_source_count:citedCount,
+      issues:issues.slice(0,20).map(issue=>Array.from(issue).slice(0,300).join('')),available_sources:[...this.lastMainEvidence.values()].slice(0,40).map(source=>({paper_id:source.paper_id,chunk_id:source.chunk_id}))};
+    if(issues.some(issue=>issue!=='missing_visible_citation'))(ledger.record.generation_failures??=[]).push({code:'INVALID_CITATION',error:JSON.stringify(this.completionFeedback),response_text:Array.from(output).slice(0,16000).join(''),request_id:this.lastMainRequest?.request_id??null});
     const tools=ledger.record.tools,retrievals=tools.filter(tool=>tool.tool_name==='retrieve_chunks'&&tool.executed),canContinue=!ledger.closing&&ledger.remainingRequests>=1&&this.availableTools().length>0;
     this.currentExecution=this.executionTracker.decide(declared,{progress_key:JSON.stringify({completed:tools.filter(tool=>tool.status==='completed').map(tool=>tool.tool_call_id).sort(),sources:[...this.lastMainEvidence.keys()].sort()}),
-      source_count:this.lastMainEvidence.size,retrieval_attempts:retrievals.length,successful_retrievals:retrievals.filter(tool=>tool.status==='completed').length,running_tools:tools.filter(tool=>tool.status==='running').length,can_continue:canContinue});
+      source_count:this.lastMainEvidence.size,retrieval_attempts:retrievals.length,successful_retrievals:retrievals.filter(tool=>tool.status==='completed').length,running_tools:tools.filter(tool=>tool.status==='running').length,can_continue:canContinue,
+      requires_sources:requiresSources,cited_source_count:citedCount,citation_issues:issues});
     ledger.record.execution=this.currentExecution;
     this.tasks?.update(this.currentExecution.goal_updates,this.lastMainEvidence,this.currentExecution.needs_sources!==false);
     if(this.comparison)this.tasks?.comparison(this.comparison.report());
     if(this.currentExecution.state==='working'){
       if(output){ledger.record.internal_drafts!.push(output);this.captureWorkbenchAnswer(output);}
-      this.continueWorkbenchGeneration();return {action:'continue'};
+      this.continueWorkbenchLoop();return {action:'continue'};
     }
     if(this.currentExecution.stop_reason&&this.workbenchBest&&this.workbenchBest.answer.execution?.state!=='complete'){
       const best=this.workbenchBest.answer;
@@ -734,7 +748,7 @@ export class MainPaperHarness {
 
   private stageInstruction():string{
     const goals=this.tasks?.goals();
-    return this.baseStageInstruction()+(goals?.length?'\n'+GOAL_PROGRESS_INSTRUCTION+'\nTask goals: '+JSON.stringify(goals):'');
+    return this.baseStageInstruction()+(goals?.length?'\n'+GOAL_PROGRESS_INSTRUCTION+'\nTask goals: '+JSON.stringify(goals):'')+(this.completionFeedback?'\nAnswer source validation: '+JSON.stringify(this.completionFeedback):'');
   }
   private baseStageInstruction(): string {
     const ledger = this.activeLedger();
@@ -970,7 +984,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
       }
     }
     if (!this.useReflect) {
-      if(this.workbench)this.continueWorkbenchGeneration();
+      if(this.workbench)this.continueWorkbenchLoop();
       else this.enterClosing("Reflect disabled by C component control; no host supplement", "generate");
       return;
     }
@@ -1060,7 +1074,7 @@ Complete this retrieval batch through the declared tools. If separate queries ar
     this.answerStreamer.reset();
     this.streamedContext=undefined;
     this.tasks=this.workbench?new TaskProgressTracker(userText,progress=>this.options.onTaskProgress?.(JSON.parse(redactText(JSON.stringify(progress),this.options.secrets)))):undefined;
-    this.executionTracker=new TurnExecutionTracker();this.currentExecution=undefined;this.completionChecks=0;
+    this.executionTracker=new TurnExecutionTracker();this.currentExecution=undefined;this.completionChecks=0;this.completionFeedback=undefined;
     this.answer = "";
     this.adaptations = [];
     this.input = userText; this.frame = undefined; this.check = undefined; this.supplementUsed = false; this.batchReservations = 0;

@@ -1,6 +1,6 @@
 export type ExecutionState='working'|'complete'|'partial'|'clarification';
 export interface TurnExecution {state:ExecutionState;remaining_needs:string[];needs_sources?:boolean;origin?:'model'|'completion_check'|'host';stop_reason?:string;goal_updates?:import('./task-progress.ts').GoalUpdate[]}
-export interface ExecutionFacts {progress_key:string;source_count:number;retrieval_attempts:number;successful_retrievals:number;running_tools:number;can_continue:boolean}
+export interface ExecutionFacts {progress_key:string;source_count:number;retrieval_attempts:number;successful_retrievals:number;running_tools:number;can_continue:boolean;requires_sources?:boolean;cited_source_count?:number;citation_issues?:readonly string[]}
 import {splitAnswerControl} from '../web/answer-format.js';
 
 export const TURN_EXECUTION_INSTRUCTION=`Use actual tool calls to perform actions. A textual plan is not an executed action. When ending a model step without tool calls, prefer one single JSON object {"execution":{"state":"working|complete|partial|clarification","remaining_needs":["unfinished user needs"],"needs_sources":true},"answer":"readable Markdown"}. Put execution first and keep all Markdown inside answer. Plain Markdown also remains valid, but never append a separate state JSON block or code fence after it. working means another action is required to fulfill the current request; complete means the actual question, including inherited follow-up goals, has been answered; partial means give the useful result and unresolved gaps now; clarification means a real user answer is required. needs_sources is false for conversation, personal memory or pure catalog navigation. State is about task execution, not hidden reasoning. Do not call a task complete merely because a model request stopped. An existing readable answer remains valid if execution metadata is missing.`;
@@ -35,8 +35,10 @@ export class TurnExecutionTracker {
   decide(declared:TurnExecution,facts:ExecutionFacts):TurnExecution{
     this.decisions++;
     let result={...declared,remaining_needs:[...declared.remaining_needs]};
-    const needsSource=result.needs_sources===true&&facts.source_count===0;
-    if(facts.running_tools||result.state==='complete'&&needsSource||result.state==='partial'&&needsSource&&!facts.retrieval_attempts){
+    if(facts.requires_sources)result.needs_sources=true;
+    const needsSource=result.needs_sources===true&&(facts.source_count===0||facts.cited_source_count===0);
+    const invalidReferences=Boolean(facts.citation_issues?.some(issue=>issue!=='missing_visible_citation'));
+    if(facts.running_tools||result.state==='complete'&&(needsSource||invalidReferences)||result.state==='partial'&&(invalidReferences||needsSource&&!facts.retrieval_attempts)){
       result={...result,state:'working',remaining_needs:result.remaining_needs.length?result.remaining_needs:['读取当前问题所需的论文原文']};
     }
     if(result.state!=='working'){this.lastProgress=facts.progress_key;this.noProgress=0;return result;}
