@@ -77,21 +77,26 @@ const SVG='http://www.w3.org/2000/svg';
 function vector(tag,attributes={},text){const n=document.createElementNS(SVG,tag);for(const [key,value] of Object.entries(attributes))n.setAttribute(key,String(value));if(text!==undefined)n.textContent=text;return n;}
 let graphId=0;
 const graphNodes=[
-  ['question',18,116,112,'用户问题','输入'],['understand',164,116,146,'理解与准备','上下文 / 检索计划'],
-  ['decision',370,116,144,'模型决策','回答或选择工具'],['action',562,116,144,'调用工具','执行检索'],
-  ['observation',754,116,144,'观察返回','读取工具结果'],['generate',958,116,130,'整理回答','生成 / 引用检查'],['memory',1118,116,92,'会话记忆','更新状态']
+  ['question',28,22,132,'用户问题','提出研究问题'],['understand',216,22,168,'理解与准备','确定目标与范围'],
+  ['decision',300,135,0,'模型决策','选择工具或回答'],['action',447,390,0,'调用工具','检索与读取原文'],
+  ['observation',153,390,0,'观察返回','读取结果与证据'],['generate',220,542,160,'整理回答','生成与核对引用'],['memory',436,542,136,'会话记忆','保存本轮进展']
 ];
 const graphEdges=[
-  ['question-understand','M130 145 H164'],['understand-decision','M310 145 H370'],
-  ['decision-action','M514 145 H562'],['action-observation','M706 145 H754'],
-  ['observation-decision','M826 116 V66 H442 V116','带着结果继续判断',634,55],
-  ['understand-action','M310 145 H334 V222 H634 V174','检索计划',450,213],
-  ['observation-action','M826 174 V222 H634 V174','按计划继续',755,213],
-  ['observation-generate','M898 145 H958'],['decision-generate','M442 116 V22 H1023 V116','直接生成',1023,15],
-  ['generate-decision','M1023 116 V44 H442 V116','继续判断',634,37],
-  ['understand-generate','M237 116 V22 H1023 V116'],['generate-memory','M1088 145 H1118'],
-  ['generate-generate','M1000 116 C960 65 1085 65 1045 116','检查后修正',1023,70]
+  ['question-understand','M166 44 H208'],['understand-decision','M300 70 V84'],
+  ['decision-action','M350 142 A170 170 0 0 1 466 343'],
+  ['action-observation','M417 425 A170 170 0 0 1 183 425'],
+  ['observation-decision','M134 343 A170 170 0 0 1 250 142'],
+  ['understand-action','M390 44 H566 V390 H498'],
+  ['observation-action','M175 431 Q300 523 425 431'],
+  ['observation-generate','M153 438 C153 502 245 493 260 534'],
+  ['decision-generate','M350 135 C552 160 560 520 388 568'],
+  ['generate-decision','M212 568 C18 550 12 195 250 135'],
+  ['understand-generate','M208 44 H16 V568 H212'],
+  ['generate-memory','M386 568 H428'],
+  ['generate-generate','M240 596 C202 636 376 636 342 596']
 ];
+const coreNodes=new Set(['decision','action','observation']);
+const coreEdges=new Set(['decision-action','action-observation','observation-decision']);
 
 export class ExecutionPlayback {
   constructor(root,turn,details={},options={}){
@@ -100,31 +105,48 @@ export class ExecutionPlayback {
     this.visibility=()=>{if(document.hidden){cancelAnimationFrame(this.frame);this.lastFrame=null;this.root.classList.remove('is-animating');}else{this.paint();if(this.playing||this.follow)this.startClock();}};document.addEventListener('visibilitychange',this.visibility);
   }
   build(){
-    this.root.replaceChildren();this.root.classList.add('execution-player');
-    const head=make('header','replay-heading'),title=make('div','replay-title-row'),collapse=make('button','replay-graph-toggle','收起流程图');collapse.type='button';collapse.setAttribute('aria-expanded','true');collapse.addEventListener('click',()=>{this.graph.hidden=!this.graph.hidden;collapse.textContent=this.graph.hidden?'展开流程图':'收起流程图';collapse.setAttribute('aria-expanded',String(!this.graph.hidden));});title.append(make('h1',null,'Agent 执行回放'),collapse);head.append(title);this.summary=make('p','replay-summary');this.question=make('p','replay-question');head.append(this.summary,this.question);this.root.append(head);
-    this.graph=make('div','replay-graph');this.graph.setAttribute('aria-label','问答流程与 Agent 工具交互循环');this.root.append(this.graph);this.buildGraph();
+    this.root.replaceChildren();this.root.classList.add('execution-player','orbit-player');
+    const head=make('header','replay-heading'),title=make('div','replay-title-row'),collapse=make('button','replay-graph-toggle','收起流程图');collapse.type='button';collapse.setAttribute('aria-expanded','true');
+    collapse.addEventListener('click',()=>{const hidden=!this.graph.hidden;this.graph.hidden=hidden;this.root.classList.toggle('graph-collapsed',hidden);collapse.textContent=hidden?'展开流程图':'收起流程图';collapse.setAttribute('aria-expanded',String(!hidden));});
+    title.append(make('h1',null,'Agent 执行回放'),collapse);head.append(title);this.summary=make('p','replay-summary');this.question=make('p','replay-question');head.append(this.question,this.summary);this.root.append(head);
+    const transport=make('div','replay-transport');this.root.append(transport);
     const controls=make('div','replay-controls');this.play=make('button','replay-play','播放');this.play.addEventListener('click',()=>this.toggle());
     this.previous=make('button',null,'上一事件');this.previous.addEventListener('click',()=>this.step(-1));this.next=make('button',null,'下一事件');this.next.addEventListener('click',()=>this.step(1));
     const speedLabel=make('label','replay-speed','速度 ');this.speedSelect=make('select');this.speedSelect.setAttribute('aria-label','回放速度');
     for(const value of [1,2,4]){const option=make('option',null,value+'×');option.value=String(value);this.speedSelect.append(option);}this.speedSelect.value=String(this.speed);this.speedSelect.addEventListener('change',()=>{this.speed=Number(this.speedSelect.value);});speedLabel.append(this.speedSelect);
     this.liveButton=make('button','replay-follow','回到实时');this.liveButton.addEventListener('click',()=>{this.follow=true;this.playing=false;this.startClock();this.paint();});this.clock=make('span','replay-clock');
-    controls.append(this.play,this.previous,this.next,speedLabel,this.liveButton,this.clock);this.root.append(controls);
+    controls.append(this.play,this.previous,this.next,speedLabel,this.liveButton,this.clock);transport.append(controls);
     const timeline=make('div','replay-timeline'),label=make('label',null,'执行时间轴');this.slider=make('input','replay-slider');this.slider.type='range';this.slider.min='0';this.slider.step='1';this.slider.setAttribute('aria-label','执行时间轴');
     this.slider.addEventListener('input',()=>{this.pause();this.follow=false;this.seek(Number(this.slider.value));});label.append(this.slider);timeline.append(label);
-    const captions=make('div','replay-captions');this.eventCount=make('span');this.durationLabel=make('span');captions.append(make('span',null,'开始'),this.eventCount,this.durationLabel);timeline.append(captions);this.root.append(timeline);
+    const captions=make('div','replay-captions');this.eventCount=make('span');this.durationLabel=make('span');captions.append(make('span',null,'开始'),this.eventCount,this.durationLabel);timeline.append(captions);transport.append(timeline);
+    const body=make('div','replay-body'),overview=make('section','replay-overview'),graphHead=make('div','replay-section-heading');
+    graphHead.append(make('h2',null,'执行全景'),make('span',null,'点击节点，切换对应事件'));overview.append(graphHead);
+    this.graph=make('div','replay-graph');this.graph.setAttribute('aria-label','决策、调用工具、观察返回组成环形交互循环');overview.append(this.graph);this.buildGraph();
+    const eventsHead=make('div','replay-section-heading replay-events-heading');eventsHead.append(make('h2',null,'执行记录'));this.listCounter=make('span');eventsHead.append(this.listCounter);
+    this.eventsList=make('ol','replay-events');this.eventsList.setAttribute('aria-label','本轮执行事件');overview.append(eventsHead,this.eventsList);
+    const inspector=make('section','replay-inspector'),detailHead=make('div','replay-section-heading');detailHead.append(make('h2',null,'事件详情'));this.phaseLabel=make('span','replay-phase');detailHead.append(this.phaseLabel);
+    this.detailRoot=make('div','replay-detail');inspector.append(detailHead,this.detailRoot);body.append(overview,inspector);this.root.append(body);
     this.note=make('p','replay-note');this.root.append(this.note);
-    const body=make('div','replay-body');this.eventsList=make('ol','replay-events');this.eventsList.setAttribute('aria-label','本轮执行事件');this.detailRoot=make('div','replay-detail');body.append(this.eventsList,this.detailRoot);this.root.append(body);
   }
   buildGraph(){
-    const id='replay-arrow-'+(++graphId),svg=vector('svg',{viewBox:'0 0 1228 252',role:'group','aria-label':'从用户问题到回答和记忆；模型决策、调用工具和观察返回可循环'});
+    const id='replay-arrow-'+(++graphId),svg=vector('svg',{viewBox:'0 0 600 640',role:'group','aria-label':'环形 Agent Loop：模型决策、调用工具、观察返回；回答和记忆在循环之外'});
     const defs=vector('defs'),marker=vector('marker',{id,viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'});marker.append(vector('path',{d:'M1 1 L9 5 L1 9',fill:'none',stroke:'context-stroke','stroke-width':1.5}));defs.append(marker);svg.append(defs);
-    svg.append(vector('rect',{x:348,y:39,width:572,height:200,rx:12,class:'flow-loop-boundary'}),vector('text',{x:634,y:96,'text-anchor':'middle',class:'flow-loop-title'},'Agent Loop · 模型 / 行动 / 观察'));
+    svg.append(vector('circle',{cx:300,cy:305,r:170,class:'orbit-guide'}),vector('circle',{cx:300,cy:305,r:132,class:'orbit-inner'}));
+    svg.append(vector('text',{x:300,y:292,'text-anchor':'middle',class:'orbit-title'},'Agent Loop'));
+    this.orbitPhase=vector('text',{x:300,y:320,'text-anchor':'middle',class:'orbit-phase'});this.orbitCount=vector('text',{x:300,y:348,'text-anchor':'middle',class:'orbit-count'});svg.append(this.orbitPhase,this.orbitCount);
     this.edgeElements=new Map();
-    for(const [key,d,label,x,y] of graphEdges){const group=vector('g',{class:'flow-edge'}),path=vector('path',{d,fill:'none','marker-end':`url(#${id})`});group.append(path);if(label)group.append(vector('text',{x,y,'text-anchor':'middle'},label));this.edgeElements.set(key,group);svg.append(group);}
+    for(const [key,d] of graphEdges){const group=vector('g',{class:'flow-edge'+(coreEdges.has(key)?' orbit-main':' orbit-route')}),path=vector('path',{d,fill:'none','marker-end':`url(#${id})`});group.append(path);this.edgeElements.set(key,group);svg.append(group);}
     this.nodeElements=new Map();
     for(const [key,x,y,width,title,subtitle] of graphNodes){
-      const group=vector('g',{class:'flow-node',role:'button',tabindex:0,'aria-label':'跳至'+title});group.append(vector('rect',{x,y,width,height:58,rx:8}),vector('text',{x:x+width/2,y:y+24,'text-anchor':'middle',class:'flow-node-title'},title),vector('text',{x:x+width/2,y:y+43,'text-anchor':'middle',class:'flow-node-subtitle'},subtitle));
-      const jump=()=>{const found=this.timeline?.events.findIndex(event=>event.node===key);if(found>=0)this.select(found);};group.addEventListener('click',jump);group.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();jump();}});this.nodeElements.set(key,group);svg.append(group);
+      const round=coreNodes.has(key),group=vector('g',{class:'flow-node '+(round?'orbit-node':'orbit-stage'),role:'button',tabindex:0,'aria-label':'切换到'+title});
+      if(round){
+        group.append(vector('circle',{cx:x,cy:y,r:44,class:'orbit-node-disc'}),vector('circle',{cx:x,cy:y,r:50,class:'orbit-node-focus'}));
+        const icon=vector('g',{transform:`translate(${x} ${y-12})`,class:'orbit-node-icon','aria-hidden':'true'});
+        const paths={decision:['M-8-7H3V-1H8V7','M3-7L8-2M3-7L-2-2','M-8-7V7H-3'],action:['M-10-7H10V7H-10Z','M-6-2H6M-6 2H1'],observation:['M-10 0C-5-9 5-9 10 0C5 9-5 9-10 0Z','M-3 0A3 3 0 1 0 3 0A3 3 0 1 0-3 0']};
+        for(const d of paths[key])icon.append(vector('path',{d}));group.append(icon,vector('text',{x,y:y+18,'text-anchor':'middle',class:'flow-node-title'},title),vector('text',{x,y:y+68,'text-anchor':'middle',class:'flow-node-subtitle'},subtitle));
+      }else group.append(vector('rect',{x,y,width,height:52,rx:12}),vector('text',{x:x+width/2,y:y+22,'text-anchor':'middle',class:'flow-node-title'},title),vector('text',{x:x+width/2,y:y+40,'text-anchor':'middle',class:'flow-node-subtitle'},subtitle));
+      const jump=()=>{const all=this.timeline?.events.map((event,index)=>({event,index})).filter(({event})=>event.node===key&&(event.moment==='start'||event.moment==='point'||event.legacy))??[];const next=all.find(({index})=>index>this.index)??all[0];if(next)this.select(next.index);};
+      group.addEventListener('click',jump);group.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();jump();}});this.nodeElements.set(key,group);svg.append(group);
     }this.graph.append(svg);
   }
   update(turn,details={},options={}){
@@ -138,12 +160,13 @@ export class ExecutionPlayback {
     this.question.textContent=turn.question;const items=turn.activity??[],models=items.filter(item=>item.kind==='model').length,tools=items.filter(item=>item.kind==='tool').length;
     this.summary.textContent=(this.live?'实时执行':turn.status==='completed'?'本轮已完成':'本轮未完成')+` · ${models} 次模型请求 · ${tools} 次工具调用`;
     this.usedNodes=new Set(this.timeline.events.map(event=>event.node));this.usedEdges=new Set(this.timeline.events.map(event=>event.edge));
+    this.listCounter.textContent=this.timeline.events.length+' 个事件';
     this.eventsList.replaceChildren();this.eventButtons=[];
     for(const [index,event] of this.timeline.events.entries()){
       const li=make('li'),button=make('button');button.type='button';button.append(make('span','replay-event-time',executionTime(event.at)),make('span',null,event.title));button.addEventListener('click',()=>this.select(index));li.append(button);this.eventsList.append(li);this.eventButtons.push(button);
     }
     const missing=Object.keys(this.errors).length,legacy=this.timeline.events.some(event=>event.legacy);
-    this.note.textContent=!this.timeline.hasRecords?'这条回答没有保存执行记录。':missing?'部分请求详情暂时无法读取，已保留执行顺序。':legacy?'部分旧记录仅保存完成时间，时间轴按已知事件显示。':this.live?'正在接收真实执行事件；拖动时间轴可暂停跟随。':'拖动时间轴查看当时的输入与返回，也可点击流程节点定位。';
+    this.note.textContent=!this.timeline.hasRecords?'这条回答没有保存执行记录。':missing?'部分请求详情暂时无法读取，可重新读取。':legacy?'部分旧记录仅有完成时间，按已知事件显示。':this.live?'正在接收执行记录；拖动时间轴可暂停跟随。':'拖动时间轴回看当时的输入与返回。连续点击同一节点，可切换该阶段的事件。';
     this.liveButton.hidden=!this.live;this.paint(true);if(this.follow)this.startClock();
   }
   select(index){this.pause();this.follow=false;this.index=Math.max(0,Math.min(index,this.timeline.events.length-1));this.position=this.timeline.events[this.index].at;this.paint(true);}
@@ -172,7 +195,12 @@ export class ExecutionPlayback {
     this.clock.textContent=executionTime(this.position)+' / '+executionTime(duration);this.durationLabel.textContent=this.live?'实时':executionTime(duration);this.eventCount.textContent=`事件 ${this.index+1} / ${this.timeline.events.length}`;
     if(force||this.paintedKey!==event.key){
       const visited=new Set(this.timeline.events.slice(0,this.index+1).map(item=>item.node));
-      for(const [key,node] of this.nodeElements){node.classList.toggle('active',key===event.node);node.classList.toggle('visited',visited.has(key));node.classList.toggle('unrecorded',!this.usedNodes.has(key));node.setAttribute('aria-disabled',String(!this.usedNodes.has(key)));node.setAttribute('tabindex',this.usedNodes.has(key)?'0':'-1');node.querySelector('.flow-node-subtitle').textContent=this.usedNodes.has(key)?graphNodes.find(entry=>entry[0]===key)[5]:'本轮未使用';}
+      const past=this.timeline.events.slice(0,this.index+1),decisions=new Set(past.filter(item=>item.kind==='model'&&item.node==='decision').map(item=>item.id)).size,tools=new Set(past.filter(item=>item.kind==='tool').map(item=>item.id)).size;
+      const failed=new Set(past.filter(item=>item.status==='error').map(item=>item.node));
+      this.orbitPhase.textContent=graphNodes.find(entry=>entry[0]===event.node)?.[4]??'等待开始';
+      this.orbitCount.textContent=!this.timeline.hasRecords?'暂无执行记录':decisions?decisions+' 次模型决策 · '+tools+' 次工具调用':this.usedNodes.has('action')?'等待进入执行':'暂无工具调用';
+      this.phaseLabel.textContent=event.moment==='start'?'请求发出':event.moment==='end'?'结果返回':event.kind==='finish'?'本轮结束':'用户输入';
+      for(const [key,node] of this.nodeElements){node.classList.toggle('active',key===event.node);node.classList.toggle('visited',visited.has(key));node.classList.toggle('failed',failed.has(key));node.classList.toggle('unrecorded',!this.usedNodes.has(key));node.setAttribute('aria-disabled',String(!this.usedNodes.has(key)));node.setAttribute('tabindex',this.usedNodes.has(key)?'0':'-1');node.querySelector('.flow-node-subtitle').textContent=this.usedNodes.has(key)?graphNodes.find(entry=>entry[0]===key)[5]:this.timeline.hasRecords?'本轮未使用':'暂无记录';}
       for(const [key,edge] of this.edgeElements){edge.classList.toggle('recorded',this.usedEdges.has(key));edge.classList.toggle('flow-current',event.edge===key);}
       for(const [index,button] of this.eventButtons.entries()){button.classList.toggle('selected',index===this.index);if(index===this.index)button.setAttribute('aria-current','step');else button.removeAttribute('aria-current');}
       if(this.paintedKey!==event.key){this.detailRoot.dataset.tab=event.moment==='end'?'output':'input';this.renderDetail(event);this.eventsList.querySelector('[aria-current]')?.scrollIntoView({block:'nearest'});}
@@ -188,7 +216,7 @@ export class ExecutionPlayback {
     if(event.id&&event.item?.has_details){const note=make('p','trace-description',this.errors[event.id]?'这次请求的详情暂时无法读取。':'正在等待请求详情。');this.detailRoot.append(note);}
     if(event.legacy)this.detailRoot.append(make('p','trace-description','这条旧记录没有请求开始时间，仅展示已保存的完成事件。'));
   }
-  dispose(){this.disposed=true;this.pause();document.removeEventListener('visibilitychange',this.visibility);this.root.classList.remove('execution-player','is-animating');}
+  dispose(){this.disposed=true;this.pause();document.removeEventListener('visibilitychange',this.visibility);this.root.classList.remove('execution-player','orbit-player','is-animating','graph-collapsed');}
 }
 
 /** POST streams retain ownership headers; transport loss never retries an inference. */

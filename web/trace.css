@@ -51,3 +51,158 @@
 @media(max-width:900px){.execution-player{padding:16px}.replay-body{grid-template-columns:195px minmax(0,1fr)}.replay-graph svg{height:216px}.replay-heading h1{font-size:21px}.replay-detail{padding-left:16px}}
 @media(max-height:720px) and (min-width:621px){.execution-player{overflow:auto;flex:none;height:calc(94dvh - 58px)}.replay-body{min-height:300px;flex:none}.replay-detail,.replay-events{max-height:400px}}
 @media(prefers-reduced-motion:reduce){.is-animating .flow-edge.flow-current path{animation:none}.flow-node rect{transition:none}}
+
+/* Orbit replay: a reading workspace, with the decision loop kept in view. */
+.replay-dialog[open] {
+  width: min(1540px, 96vw);
+  height: 94dvh;
+  max-height: 1100px;
+  border-radius: 18px;
+  background: #fcfdf9;
+}
+.orbit-player {
+  --replay-ink: #203c30;
+  --replay-muted: #5c7062;
+  --replay-line: #dce4d8;
+  --replay-accent: #24563f;
+  --replay-paper: #fcfdf9;
+  padding: 0;
+  color: var(--replay-ink);
+  background: var(--replay-paper);
+  overflow: hidden;
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+.orbit-player .replay-heading { padding: 24px 30px 16px; }
+.orbit-player .replay-heading h1 { margin: 0; font-size: 25px; font-weight: 650; letter-spacing: -.025em; }
+.orbit-player .replay-title-row { gap: 24px; }
+.orbit-player .replay-graph-toggle {
+  padding: 7px 0 7px 12px;
+  color: var(--replay-muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+.orbit-player .replay-graph-toggle:hover { color: var(--replay-accent); text-decoration: underline; text-underline-offset: 4px; }
+.orbit-player .replay-question { margin: 10px 0 7px; max-height: 44px; font-size: 14px; color: #344e3f; }
+.orbit-player .replay-summary { margin: 0; color: var(--replay-muted); font-size: 12px; }
+.orbit-player .replay-transport {
+  flex-shrink: 0;
+  padding: 14px 30px 11px;
+  background: #f2f5ed;
+  border-top: 1px solid var(--replay-line);
+  border-bottom: 1px solid var(--replay-line);
+}
+.orbit-player .replay-controls { padding: 0; gap: 8px; }
+.orbit-player .replay-controls button,
+.orbit-player .replay-controls select {
+  min-height: 34px;
+  padding: 6px 13px;
+  border: 1px solid #cdd9c6;
+  border-radius: 8px;
+  color: #344f3c;
+  background: #fcfdf9;
+  font: 12px "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+.orbit-player .replay-controls button:hover:enabled { border-color: #8fa68e; background: #e8eee1; }
+.orbit-player .replay-controls .replay-play { min-width: 86px; background: var(--replay-accent); border-color: var(--replay-accent); color: #fff; font-weight: 600; }
+.orbit-player .replay-controls .replay-play:hover:enabled { background: #193f2c; }
+.orbit-player .replay-speed { margin-left: 6px; color: var(--replay-muted); }
+.orbit-player .replay-controls select { background: transparent; border: 0; padding: 4px; }
+.orbit-player .replay-clock { color: #304b39; font-size: 12px; }
+.orbit-player .replay-timeline > label { font-size: 0; }
+.orbit-player .replay-slider { margin: 15px 0 9px; height: 4px; background: linear-gradient(to right,#376d47 0 var(--replay-progress),#cddac5 var(--replay-progress) 100%); }
+.orbit-player .replay-slider::-webkit-slider-thumb { width: 15px; height: 15px; background: #24563f; border-width: 3px; box-shadow: 0 2px 5px #203c3020; }
+.orbit-player .replay-captions { color: #5c7062; font-size: 11px; }
+.orbit-player .replay-body { display: grid; grid-template-columns: minmax(390px, 41%) minmax(0, 1fr); flex: 1; min-height: 0; border-top: 0; overflow: hidden; }
+.orbit-player .replay-overview {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 0 20px;
+  background: #f6f8f1;
+  scrollbar-width: thin;
+  scrollbar-color: #a3b89b #f6f8f1;
+}
+.orbit-player .replay-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; flex-shrink: 0; }
+.orbit-player .replay-section-heading h2 { margin: 0; font-size: 13px; line-height: 1.5; font-weight: 650; color: #2c4937; }
+.orbit-player .replay-section-heading > span { font-size: 11px; color: var(--replay-muted); }
+.orbit-player .replay-graph { margin: 0; height: clamp(390px, 49vh, 530px); min-height: 390px; flex: 0 0 auto; overflow: visible; width: 100%; }
+.orbit-player .replay-graph svg { display: block; width: 100%; min-width: 0; height: 100%; }
+.orbit-player .orbit-guide { fill: none; stroke: #d9e2d2; stroke-width: 2; }
+.orbit-player .orbit-inner { fill: #f9fbf5; stroke: #e6ecdf; stroke-width: 1; }
+.orbit-player .orbit-title { fill: #244732; font-size: 28px; font-weight: 650; letter-spacing: -.03em; }
+.orbit-player .orbit-phase { fill: #476249; font-size: 19px; font-weight: 500; }
+.orbit-player .orbit-count { fill: #5a7057; font-size: 16px; font-variant-numeric: tabular-nums; }
+.orbit-player .flow-edge path { stroke: #a8bda0; stroke-width: 1.6; stroke-dasharray: none; stroke-linecap: round; stroke-linejoin: round; }
+.orbit-player .flow-edge.orbit-main path { stroke: #b2c5a8; stroke-width: 2.5; }
+.orbit-player .flow-edge.orbit-route:not(.recorded) { visibility: hidden; }
+.orbit-player .flow-edge.recorded path { stroke: #78996a; }
+.orbit-player .flow-edge.flow-current path { stroke: #24563f; stroke-width: 3.5; stroke-dasharray: 12 7; }
+.orbit-player.is-animating .flow-edge.flow-current path { animation: orbit-travel 1.8s linear infinite; }
+.orbit-player .flow-node rect,
+.orbit-player .orbit-node-disc { fill: #fcfdf9; stroke: #adc0a4; stroke-width: 1.5; transition: fill .2s ease-out, stroke .2s ease-out; }
+.orbit-player .flow-node-title { fill: #35543b; font-size: 20px; font-weight: 600; }
+.orbit-player .flow-node-subtitle { fill: #5a7057; font-size: 16px; font-weight: 400; }
+.orbit-player .orbit-node .flow-node-title { font-size: 19px; }
+.orbit-player .orbit-node .flow-node-subtitle { font-size: 17px; }
+.orbit-player .orbit-node-icon { fill: none; stroke: #36573d; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.orbit-player .orbit-node-focus { fill: none; stroke: transparent; stroke-width: 1.5; transition: stroke .2s ease-out; }
+.orbit-player .flow-node.visited rect,
+.orbit-player .flow-node.visited .orbit-node-disc { fill: #e6eedc; stroke: #85a775; }
+.orbit-player .flow-node.active rect,
+.orbit-player .flow-node.active .orbit-node-disc { fill: #24563f; stroke: #24563f; stroke-width: 2; }
+.orbit-player .flow-node.active .orbit-node-focus { stroke: #86a47a; }
+.orbit-player .flow-node.active .flow-node-title { fill: #fff; }
+.orbit-player .flow-node.active .orbit-node-icon { stroke: #fff; }
+.orbit-player .orbit-stage.active .flow-node-subtitle { fill: #e2efda; }
+.orbit-player .orbit-node.active .flow-node-subtitle { fill: #24563f; font-weight: 550; }
+.orbit-player .flow-node.unrecorded rect,
+.orbit-player .flow-node.unrecorded .orbit-node-disc { fill: #f4f6ef; stroke: #ccd7c5; stroke-dasharray: 3 4; }
+.orbit-player .flow-node.unrecorded text { fill: #6d7d65; }
+.orbit-player .flow-node.unrecorded .orbit-node-icon { stroke: #82927a; }
+.orbit-player .flow-node:not(.unrecorded):hover rect,
+.orbit-player .flow-node:not(.unrecorded):hover .orbit-node-disc { stroke: #24563f; stroke-width: 2.5; }
+.orbit-player .flow-node:focus-visible rect,
+.orbit-player .flow-node:focus-visible .orbit-node-focus { stroke: #235e81; stroke-width: 3; }
+.orbit-player .flow-node.failed.active rect,
+.orbit-player .flow-node.failed.active .orbit-node-disc { fill: #fbf0dc; stroke: #a7793e; }
+.orbit-player .flow-node.failed.active .flow-node-title,
+.orbit-player .flow-node.failed.active .flow-node-subtitle { fill: #785027; }
+.orbit-player .flow-node.failed.active .orbit-node-icon { stroke: #785027; }
+.orbit-player .replay-events-heading { min-height: 40px; border-top: 1px solid var(--replay-line); }
+.orbit-player .replay-events { min-height: 120px; flex: 1; margin: 0; padding: 0 0 16px; border: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #a3b89b transparent; }
+.orbit-player .replay-events li { margin-bottom: 2px; }
+.orbit-player .replay-events button { display: grid; grid-template-columns: 64px minmax(0,1fr); align-items: start; gap: 10px; padding: 10px 11px; border-radius: 8px; color: #3d573f; font-size: 12px; line-height: 1.6; }
+.orbit-player .replay-events button:hover { background: #edf2e5; }
+.orbit-player .replay-events button.selected { background: #e0ead5; color: #20472c; }
+.orbit-player .replay-event-time { color: #62775c; padding-top: 1px; font-size: 11px; }
+.orbit-player .replay-inspector { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px minmax(0,1fr); border-left: 1px solid var(--replay-line); background: #fcfdf9; }
+.orbit-player .replay-inspector > .replay-section-heading { padding: 0 28px; border-bottom: 1px solid #e7ece1; }
+.orbit-player .replay-inspector .replay-phase { color: #54714b; }
+.orbit-player .replay-detail { min-height: 0; padding: 22px 28px 28px; color: #273e2d; overflow: auto; scrollbar-width: thin; scrollbar-color: #a2b497 transparent; }
+.orbit-player .replay-detail .trace-head h1 { color: #25422f; font-size: 21px; font-weight: 600; line-height: 1.5; margin-bottom: 6px; letter-spacing: -.015em; }
+.orbit-player .replay-detail .trace-head p { color: #5e715b; font-size: 12px; margin: 0 0 20px; }
+.orbit-player .replay-detail .trace-tabs { top: -22px; padding-top: 8px; gap: 24px; margin: 0 0 21px; border-color: #d8e2ce; background: #fcfdf9; }
+.orbit-player .trace-tabs button { padding: 10px 0 12px; color: #5c7056; font-size: 13px; }
+.orbit-player .trace-tabs button.selected { color: #24563f; border-bottom-color: #24563f; font-weight: 600; }
+.orbit-player .trace-description { color: #5e715b; font-size: 12px; }
+.orbit-player .trace-message { margin: 13px 0; border-color: #d9e3cf; border-radius: 12px; background: #fff; }
+.orbit-player .trace-message summary { padding: 13px 16px; background: #f1f5e9; color: #3c5737; font-size: 12px; font-weight: 550; }
+.orbit-player .trace-code { padding: 18px; font: 12px/1.85 Consolas, "Microsoft YaHei UI", monospace; color: #334b34; background: #fff; border-color: #d9e3cf; border-radius: 12px; }
+.orbit-player .trace-code-toolbar { color: #526b46; background: #f1f5e9; border-color: #d9e3cf; }
+.orbit-player .replay-note { margin: 0; min-height: 34px; padding: 9px 30px; border-top: 1px solid var(--replay-line); font-size: 11px; color: #5c7056; background: #fcfdf9; }
+.orbit-player .replay-event-content { color: #304a34; line-height: 1.9; }
+.orbit-player.graph-collapsed .replay-overview > .replay-section-heading:first-child { display: none; }
+.orbit-player.graph-collapsed .replay-events-heading { border-top: 0; min-height: 48px; }
+.replay-page > .orbit-player { max-width: none; height: 100dvh; padding: 0; }
+.orbit-player ::selection { color: #173c26; background: #d4e6c6; }
+.orbit-player button:focus-visible,
+.orbit-player select:focus-visible { outline: 2px solid #24563f; outline-offset: 3px; }
+@keyframes orbit-travel { to { stroke-dashoffset: -38; } }
+@media (prefers-reduced-motion: reduce) {
+  .orbit-player.is-animating .flow-edge.flow-current path { animation: none; }
+  .orbit-player .flow-node rect,
+  .orbit-player .orbit-node-disc,
+  .orbit-player .orbit-node-focus { transition: none; }
+}
