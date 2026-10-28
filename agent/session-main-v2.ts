@@ -455,7 +455,7 @@ export class MainPaperHarness {
       const value = this.candidate ? parseCandidateFinal(parseOutput, this.lastMainEvidence, this.options.p2?.profile === "A" || !this.check?.checks.some((need) => need.status !== "supported"), Boolean(this.frame?.ambiguity), kind, this.audit("final_answer", output)) : parseFinalAnswer(parseOutput, this.lastMainEvidence, this.options.p2?.profile === "A" || !this.check?.checks.some((need) => need.status !== "supported"), Boolean(this.frame?.ambiguity), kind);
       if(rawSelected)value.paper_coverage=validateCoverage(rawSelected.paper_coverage,this.selectedRequired,this.lastMainEvidence,value.answer);
       if(value.paper_coverage?.some(p=>p.status==="insufficient")&&value.status==="answer")throw new RuntimeFailure("ANSWER_SCOPE_ERROR","Selected papers have evidence gaps; use status=partial or refusal and state each paper gap");
-      if (this.generationRepair?.code === "INVALID_CITATION" && citationIds(value.answer).length === 0) throw new RuntimeFailure("INVALID_CITATION", "Correction removed all invalid citations instead of binding an actual source");
+      if (this.generationRepair?.code === "INVALID_CITATION" && value.answer_kind === "paper_fact" && ["answer","partial"].includes(value.status) && citationIds(value.answer).length === 0) throw new RuntimeFailure("INVALID_CITATION", "Factual correction still requires an actually visible source");
       ledger.record.final_structure = value; ledger.record.business_status = value.status;
       this.answer = value.answer;
       ledger.record.citation_validity = this.citations(value.answer, this.lastMainRequest);
@@ -478,13 +478,13 @@ export class MainPaperHarness {
 
   private stageInstruction(): string {
     const ledger = this.activeLedger();
-    if (this.generationRepair) return `${FINAL_ANSWER_INSTRUCTION}\nOne final correction only. ${this.generationRepair.error}\nAllowed citation IDs: ${JSON.stringify([...this.lastMainEvidence.keys()])}. Original failed response: ${this.generationRepair.original}\nDo not retrieve, invent support or erase invalid citations to conceal the original failure.`;
+    if (this.generationRepair) return `${FINAL_ANSWER_INSTRUCTION}\nOne final correction only. ${this.generationRepair.error}\nAllowed citation IDs: ${JSON.stringify([...this.lastMainEvidence.keys()])}. Original failed response: ${this.generationRepair.original}\nDo not retrieve or invent support. Supported factual answer/partial must cite visible evidence. If support is unavailable, withdraw unsupported claims and give a clear refusal or necessary clarification; these do not need fabricated citations.`;
     if (this.citationRepair) return `Host citation correction, one attempt only. Do not retrieve or delete citations to conceal an invalid answer.
 Correct only citation format/source availability using the actually visible excerpts. Invalid IDs: ${JSON.stringify(this.citationRepair.invalid)}.
 Available copyable citations: ${JSON.stringify([...this.validEvidenceProof(this.lastMainRequest?.tool_context ?? [])].map((id) => `[${this.r2 ? "cite:" : ""}${id}]`))}.
 Original candidate answer: ${this.citationRepair.original}`;
     if (ledger.closing) return `${this.full && this.options.p2?.answerContract === "full-v1-json" ? FINAL_ANSWER_INSTRUCTION : ""}\nHost stage ${ledger.stage}: retrieval is closed. Answer or clarify using only actually visible excerpts and real dialogue. State bounded evidence insufficiency when needed. Do not request tools. ${this.frame ? `QuestionFrame (fallible model parsing): ${JSON.stringify(this.frame)}. If its real ambiguity is unresolved, ask for clarification.` : ""} ${this.check ? `EvidenceCheck (fallible model assessment): ${JSON.stringify(this.check)}` : ""}
-${(this.frame as FullFrame | undefined)?.intent === "session_control" ? 'Use answer_kind="session_control"; confirm only actual user session instructions. No paper findings.' : (this.frame as FullFrame | undefined)?.intent === "paper_discovery" ? `Use answer_kind="catalog"; locate only these actual public catalog entries. No paper findings. ${JSON.stringify(this.options.p2!.publicPapers.filter((paper) => this.allowed().has(paper.paper_id)).map(({paper_id,title}) => ({paper_id,title})))}` : ""}
+${(this.frame as FullFrame | undefined)?.intent === "session_control" ? 'Use answer_kind="session_control"; respond naturally to greetings, thanks, workbench usage questions or actual user session instructions. No paper findings or paper citations are required.' : (this.frame as FullFrame | undefined)?.intent === "paper_discovery" ? `Use answer_kind="catalog"; locate only these actual public catalog entries. No paper findings. ${JSON.stringify(this.options.p2!.publicPapers.filter((paper) => this.allowed().has(paper.paper_id)).map(({paper_id,title}) => ({paper_id,title})))}` : ""}
 ${this.r2 && this.options.p2?.profile === "B" && this.check?.checks.some((need) => need.status !== "supported") ? "Unresolved needs remain: do not publish a complete affirmative answer. Provide only supported partial facts and explicitly identify missing facts and the scope/budget of this retrieval. Not found in these excerpts is not proof that the paper has no answer." : ""}`;
     if (this.full && (!this.useNlu || this.autonomousPreparation) && this.frame) return `${FINAL_ANSWER_INSTRUCTION}\nQuestion preparation uses autonomous retrieval (${this.preparation.status === "fallback" ? "one invalid preparation retained" : "target discovery required"}). Interpret the complete ORIGINAL question and actual dialogue through the two domain tools. Obtain source evidence for factual answers; the host will Reflect after retrieval. Preparation is fallible and cannot replace the original question. ${this.preparation.result ? `Query suggestions: ${JSON.stringify({ rewrite: this.preparation.result.rewrite, frame: this.frame })}.` : ""} You may directly finish a catalog/session_control request of that explicit answer_kind without paper research claims.`;
     if (this.frame) return `Host stage ${ledger.stage}. QuestionFrame (fallible model parsing): ${JSON.stringify(this.frame)}.
@@ -648,6 +648,10 @@ Complete this retrieval batch through the declared tools. If separate queries ar
         reason: ledger.errorText(error), result: null };
       throw error;
     } finally { ledger.phase = oldPhase; ledger.stage = oldStage; }
+    if ((this.frame as FullFrame).intent === "session_control") {
+      this.selectedRequired=[];this.autonomousPreparation=false;
+      this.enterClosing("Conversation/session branch does not require paper retrieval or citations", "generate");return;
+    }
     if (this.autonomousPreparation) {
       this.autonomousEvidenceBefore = new Set(this.r2Evidence().keys());
       ledger.stage = "agent";

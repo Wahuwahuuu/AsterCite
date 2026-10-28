@@ -5,9 +5,9 @@ import { citationIds } from "./p2-r2.ts";
 export type BusinessStatus = "answer" | "partial" | "refusal" | "clarification";
 export type AnswerKind = "paper_fact" | "catalog" | "session_control";
 export interface FinalAnswer { status: BusinessStatus; answer_kind: AnswerKind; answer: string; exact_quotes: Array<{ chunk_id: string; quote: string; start: number; end: number }>;paper_coverage?:import("./selected-scope.ts").PaperCoverage[] }
-export const FINAL_ANSWER_INSTRUCTION = `Return only one JSON object: {"status":"answer|partial|refusal|clarification","answer":"final user-facing text","exact_quotes":[]}.
-Answer and partial require actual visible citations [cite:chunk_id]. Clarification asks about a genuinely ambiguous object/meaning.
-Optional answer_kind defaults to paper_fact. Only catalog/session_control may omit paper citations; explicitly declare that kind and make no paper research claims. These labels do not prove semantic correctness.
+export const FINAL_ANSWER_INSTRUCTION = `Return only one JSON object: {"status":"answer|partial|refusal|clarification","answer_kind":"paper_fact|catalog|session_control","answer":"final user-facing text","exact_quotes":[]}.
+For paper_fact, answer and partial require actual visible citations [cite:chunk_id]. Clarification asks about a genuinely ambiguous object/meaning. A refusal may explain missing evidence without citations or unsupported findings.
+Use session_control for greetings, thanks, workbench usage/capability questions and user session instructions. Respond naturally without paper citations or research claims. Use catalog for actual public catalog information. Follow the host's known answer kind; if omitted, that known kind is retained, otherwise the default is paper_fact. These labels do not prove semantic correctness.
 Unresolved evidence permits supported partial facts, bounded refusal or necessary clarification; it never permits a complete affirmative answer.
 exact_quotes describes VERBATIM TEXT ACTUALLY PRESENT IN answer, not an evidence list or Reflect support_spans. For ordinary faithful paraphrases use exact_quotes:[], even when grounded in excerpts. Keep valid [cite:chunk_id] markers.
 Only if answer quotes original wording, declare {chunk_id,quote}; copy one exact contiguous source substring and include the SAME decoded string in answer. Do not append unused source quotes as metadata. JSON escape once without changing decoded source text.
@@ -18,7 +18,7 @@ export function parseFinalAnswer(text: string, evidence: ReadonlyMap<string, Chu
   try {
     const raw = stageObject(text);
     for (const key of Object.keys(raw)) if (!["status", "answer_kind", "answer", "exact_quotes"].includes(key)) throw new Error(`final.${key}: unexpected field`);
-    const kind = raw.answer_kind ?? "paper_fact";
+    const kind = raw.answer_kind ?? expectedKind ?? "paper_fact";
     if (!["paper_fact", "catalog", "session_control"].includes(kind as string) || expectedKind && kind !== expectedKind) throw new Error(`final.answer_kind: expected ${expectedKind ?? "paper_fact|catalog|session_control"}, got ${JSON.stringify(kind)}`);
     if (!["answer", "partial", "refusal", "clarification"].includes(raw.status as string)) throw new Error(`final.status: value=${JSON.stringify(raw.status)}; required answer|partial|refusal|clarification`);
     if (typeof raw.answer !== "string" || !raw.answer.trim() || codepoints(raw.answer) > 16000) throw new Error("final.answer: required nonempty text <=16000 Unicode codepoints");

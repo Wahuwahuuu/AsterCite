@@ -12,7 +12,7 @@ targets: at most 4 exact allowed paper IDs. Leave [] if the target is still unkn
 constraints: only new/changed explicit user instructions, at most 6 {key,value,source_quote}, quoting exact CURRENT user text. Omit inherited instructions; the host retains their original provenance and supersedes same-key corrections. No paper findings or duplicate current_paper/comparison_order fields.
 Optional needs: at most 5 concise necessary subquestions; the host always retains a need covering the complete original question. Optional comparison_dimensions: at most 6 strings.
 Optional clarification: {question,reference_quote} only for a genuinely unresolved KEY OBJECT referenced by exact current user text, with targets=[]. Never clarify evidence insufficiency, unavailable external/private resources, or an already explicit/resolved paper. Those are normal bounded-answer/refusal paths.
-find_papers uses the actual public catalog; session_update handles explicit user session instructions without paper findings. All other requests require paper evidence. Do not output frame_id, need_id, follow_up, citations, source offsets, status or a final answer. No tools in this preparation request.`;
+find_papers uses the actual public catalog; session_update handles greetings, thanks, workbench usage/capability questions and explicit user session instructions without paper findings. These requests need targets:[] and queries:[]. A greeting followed by a paper question is still a paper question. All research requests require paper evidence. Do not output frame_id, need_id, follow_up, citations, source offsets, status or a final answer. No tools in this preparation request.`;
 
 export interface PreparationContext {
   original: string; allowed: ReadonlySet<string>; publicPapers: readonly Paper[]; frameId: string;
@@ -59,9 +59,15 @@ function explicitTargets(context: PreparationContext): string[] {
   return mentions.sort((a, b) => a.offset - b.offset).map(mention => mention.id);
 }
 
+/** Match complete conversational turns only; never strip a greeting from a research question. */
+export function isConversationalInput(original: string): boolean {
+  const value=original.trim().toLocaleLowerCase().replace(/[.!?。，！？；;、\s]+$/gu,'').replace(/\s+/gu,' ');
+  return /^(?:你好(?:呀|啊|哇)?|您好|你好吗|早上好|上午好|中午好|下午好|晚上好|早安|晚安|谢谢(?:你|您)?|多谢|再见|拜拜|你是谁|你叫什么|介绍一下你自己|你能做什么|你能干什么|你能帮我做什么|你有什么功能|怎么使用你|使用帮助|hi|hello|hey|thanks|thank you|good morning|good evening|bye|help|what can you do)$/u.test(value);
+}
+
 export function rawQuestionFrame(original: string, frameId: string): FullFrame {
   return { frame_id: frameId, question_text: original, candidate_papers: [], ordered_targets: [], information_needs: [{ need_id: "n1", text: WHOLE_QUESTION_NEED }],
-    queries: [], ambiguity: null, user_constraints: [], intent: "single_paper_qa", follow_up: false, constraints: [], comparison_dimensions: [] };
+    queries: [], ambiguity: null, user_constraints: [], intent: isConversationalInput(original)?"session_control":"single_paper_qa", follow_up: false, constraints: [], comparison_dimensions: [] };
 }
 
 export function parseQuestionPreparation(response: string, context: PreparationContext): PreparedQuestion {
@@ -73,7 +79,9 @@ export function parseQuestionPreparation(response: string, context: PreparationC
     if (!["intent", "targets", "rewrite", "queries"].some(key => Object.hasOwn(raw, key))) fail("preparation", "question-preparation fields, not a final-answer envelope");
     const fields = ["intent", "targets", "rewrite", "queries", "constraints", "needs", "comparison_dimensions", "clarification"];
     if (Object.keys(raw).some(key => !fields.includes(key))) warnings.push("unused_fields_ignored");
-    const intent = typeof raw.intent === "string" && Object.hasOwn(intentMap, raw.intent) ? intentMap[raw.intent] : "single_paper_qa";
+    const conversational=isConversationalInput(context.original);
+    const intent = conversational?"session_control":typeof raw.intent === "string" && Object.hasOwn(intentMap, raw.intent) ? intentMap[raw.intent] : "single_paper_qa";
+    if(conversational&&raw.intent!=="session_update"&&raw.intent!=="session_control")warnings.push("conversation_intent_restored");
     if (typeof raw.intent !== "string" || !Object.hasOwn(intentMap, raw.intent)) warnings.push("unknown_intent_defaulted_to_answer");
     let targets = strings(raw.targets ?? [], "targets", 4, 100);
     if (targets.some(id => !context.allowed.has(id))) fail("targets", "only currently allowed public paper IDs");
@@ -82,6 +90,7 @@ export function parseQuestionPreparation(response: string, context: PreparationC
     // only fill a missing object; they must not force every mentioned paper into scope.
     if (!targets.length && explicit.length > 4) fail("targets", "at most four current explicit objects; use autonomous scoped discovery for larger lists");
     if (!targets.length && explicit.length) { targets = explicit; warnings.push("explicit_targets_used"); }
+    if(conversational)targets=[];
     const rewrite = raw.rewrite === undefined ? context.original : text(raw.rewrite, "rewrite", 12000);
     if (raw.rewrite === undefined) warnings.push("rewrite_defaulted_to_original");
     const inherited: UserConstraint[] = [];
