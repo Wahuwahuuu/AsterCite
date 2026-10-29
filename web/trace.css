@@ -128,7 +128,7 @@
 .orbit-player .replay-section-heading h2 { margin: 0; font-size: 13px; line-height: 1.5; font-weight: 650; color: #2c4937; }
 .orbit-player .replay-section-heading > span { font-size: 11px; color: var(--replay-muted); }
 .orbit-player .replay-graph { position: relative; margin: 8px 0 0; height: clamp(350px, 44vh, 460px); min-height: 0; flex: 0 1 auto; overflow: hidden; width: 100%; }
-.orbit-player .replay-graph svg { display: block; width: calc(100% - 168px); min-width: 0; height: 100%; }
+.orbit-player .replay-graph svg { display: block; width: 100%; min-width: 0; height: 100%; }
 .orbit-player .orbit-title { fill: #5c7062; font-size: 19px; font-weight: 500; }
 .orbit-player .orbit-phase { fill: #244732; font-size: 24px; font-weight: 600; }
 .orbit-player .orbit-count { fill: #5c7062; font-size: 14px; font-variant-numeric: tabular-nums; }
@@ -179,19 +179,6 @@
 .orbit-player .replay-inspector > .replay-section-heading { padding: 0 28px; border-bottom: 1px solid #e7ece1; }
 .orbit-player .replay-inspector .replay-phase { color: #54714b; }
 .orbit-player .replay-inspector-content { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.orbit-player .replay-compaction-node { position: absolute; top: 50%; right: 0; transform: translateY(-50%); display: flex; flex-direction: column; align-items: flex-start; gap: 7px; width: 156px; min-height: 112px; padding: 14px; border: 1px solid #adc0a4; border-radius: 10px; color: #35543b; background: #fcfdf9; text-align: left; font: inherit; cursor: pointer; }
-.orbit-player .replay-compaction-title { font-size: 14px; font-weight: 600; }
-.orbit-player .replay-compaction-status { color: #476249; font-size: 12px; }
-.orbit-player .replay-compaction-tokens { color: #526b46; font-size: 11px; line-height: 1.6; font-variant-numeric: tabular-nums; }
-.orbit-player .replay-compaction-hint { color: #5c7062; font-size: 11px; }
-.orbit-player .replay-compaction-node.active { border-color: #24563f; background: #24563f; color: #fff; }
-.orbit-player .replay-compaction-node.active .replay-compaction-status,
-.orbit-player .replay-compaction-node.active .replay-compaction-tokens,
-.orbit-player .replay-compaction-node.active .replay-compaction-hint { color: #e4efdc; }
-.orbit-player .replay-compaction-node:hover:enabled { border-color: #24563f; }
-.orbit-player .replay-compaction-node:focus-visible { outline: 2px solid #24563f; outline-offset: 3px; }
-.orbit-player .replay-compaction-node:disabled { cursor: default; border-style: dashed; color: #6d7d65; }
-.orbit-player .replay-compaction-node[data-state="error"] { border-color: #a7793e; }
 .orbit-player .replay-compaction-values { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 12px 20px; margin: 20px 0; padding: 0 0 20px; border-bottom: 1px solid var(--replay-line); font-size: 13px; }
 .orbit-player .replay-compaction-values dt { color: #526b46; }
 .orbit-player .replay-compaction-values dd { margin: 0; color: #273e2d; font-variant-numeric: tabular-nums; }
