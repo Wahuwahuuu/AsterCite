@@ -2,7 +2,7 @@ import type {WebTurn,WebActivity,WebExecutionDetail} from '../agent/web-session.
 export type ReplayTurn=Pick<WebTurn,'question'|'status'|'elapsed_ms'>&Partial<WebTurn>;
 export interface ExecutionStep {
   key:string;at:number;node:string;kind:string;moment:'start'|'end'|'point';title:string;status:string;
-  id?:string;edge?:string;legacy?:boolean;item?:WebActivity;detail?:WebExecutionDetail;
+  id?:string;edge?:string;legacy?:boolean;maintenance?:boolean;item?:WebActivity;detail?:WebExecutionDetail;
 }
 export interface ExecutionTimeline {events:ExecutionStep[];duration:number;hasRecords:boolean}
 export function executionTime(ms:number):string;
@@ -21,3 +21,5 @@ export interface ExecutionBatchView {
 export function buildExecutionBatches(turn:ReplayTurn,details?:Record<string,WebExecutionDetail>):ExecutionBatch[];
 export function executionBatchAt(timeline:ExecutionTimeline,batches:ExecutionBatch[],index:number):ExecutionBatchView|null;
 export function buildExecutionGraph(timeline:ExecutionTimeline,batches:ExecutionBatch[]):ExecutionTimeline;
+export interface ExecutionCompactionView {state:'none'|'running'|'completed'|'unchanged'|'error';key:string|null;reason:string|null;before_tokens:number|null;after_tokens:number|null;threshold_tokens:number|null;summary:string|null;note:string|null}
+export function executionCompactionAt(timeline:ExecutionTimeline,index:number):ExecutionCompactionView;

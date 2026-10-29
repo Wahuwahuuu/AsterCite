@@ -5,14 +5,15 @@ const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
 export function executionTime(ms){const seconds=Math.floor(Math.max(0,ms)/1000);return seconds<60?seconds+' 秒':Math.floor(seconds/60)+' 分 '+(seconds%60)+' 秒';}
 function modelNode(item,detail,moment){
   const stage=detail?.stage??item.stage??'',phase=detail?.phase??item.phase??'';
+  if(stage==='compaction'||phase==='compaction')return 'compaction';
   if(stage==='long_term_memory'||phase==='memory')return 'memory';
-  if(['question_preparation','question_frame','compaction'].includes(stage)||phase==='compaction')return 'understand';
+  if(['question_preparation','question_frame'].includes(stage))return 'understand';
   if(['turn_completion','comparison_check','evidence_check'].includes(stage))return 'generate';
   if(moment==='end'&&detail?.output?.tool_calls?.length)return 'decision';
   if(moment==='start'&&phase==='agent'&&detail?.input?.tools?.length)return 'decision';
   if(['generate','closing','citation_repair'].includes(stage))return 'generate';
   // 老记录尚未读到详情时，仅使用已保存的展示标签作兼容。
-  if(!stage){const label=item.label??'';if(/记忆/iu.test(label))return 'memory';if(/核对.*(?:完成|比较)|整理回答|生成回答|引用/u.test(label))return 'generate';if(/理解|意图|压缩/u.test(label))return 'understand';}
+  if(!stage){const label=item.label??'';if(/压缩/u.test(label))return 'compaction';if(/记忆/iu.test(label))return 'memory';if(/核对.*(?:完成|比较)|整理回答|生成回答|引用/u.test(label))return 'generate';if(/理解|意图/u.test(label))return 'understand';}
   return 'decision';
 }
 
@@ -24,9 +25,9 @@ export function buildExecutionTimeline(turn,details={}){
     const detail=details[item.id],end=finite(detail?.turn_elapsed_ms)&&detail.status===item.status?detail.turn_elapsed_ms:finite(item.elapsed_ms)?item.elapsed_ms:0;
     const startedAt=detail?.started_at??item.started_at,duration=detail?.elapsed_ms??item.request_elapsed_ms,recordedEnd=finite(detail?.turn_elapsed_ms)?detail.turn_elapsed_ms:end;
     const modern=typeof startedAt==='string'&&finite(recordedEnd)&&finite(duration);
-    const target=item.kind==='model'?modelNode(item,detail,'start'):item.kind==='tool'?'action':item.kind==='compaction'?'understand':'memory';
-    const stage=detail?.stage??item.stage,purpose={long_term_memory:'提炼长期记忆',turn_completion:'核对任务完成情况',comparison_check:'核对比较依据',evidence_check:'核对原文依据'}[stage];
-    const name=item.kind==='tool'?(item.tool??detail?.tool??'工具'):item.kind==='model'?`第 ${detail?.cycle??item.cycle??order+1} 次模型请求${purpose?' · '+purpose:''}`:item.label;
+    const target=item.kind==='model'?modelNode(item,detail,'start'):item.kind==='tool'?'action':item.kind==='compaction'?'compaction':'memory';
+    const stage=detail?.stage??item.stage,purpose={compaction:'压缩上下文',long_term_memory:'提炼长期记忆',turn_completion:'核对任务完成情况',comparison_check:'核对比较依据',evidence_check:'核对原文依据'}[stage];
+    const name=item.kind==='tool'?(item.tool??detail?.tool??'工具'):item.kind==='model'?`第 ${detail?.cycle??item.cycle??order+1} 次模型请求${purpose?' · '+purpose:''}`:item.kind==='compaction'?'上下文压缩':item.label;
     const base={id:item.id,kind:item.kind,item,detail,name,order,status:item.status};
     if(modern||item.status==='running'){
       const at=modern?Math.max(0,recordedEnd-duration):end;
@@ -51,7 +52,7 @@ export function executionIndexAt(timeline,at){
 }
 
 export function executionNodeIndex(timeline,node,after=-1){
-  const matches=event=>event.node===node&&event.kind!=='finish';
+  const matches=event=>event.node===node&&event.kind!=='finish'&&!event.maintenance;
   const next=timeline.events.findIndex((event,index)=>index>after&&matches(event));
   return next>=0?next:timeline.events.findIndex(matches);
 }
@@ -71,7 +72,7 @@ export function executionDetailAt(detail,event){
   return event.moment==='start'?{...detail,status:'running',output:undefined,elapsed_ms:0,playback_pending:true}:detail;
 }
 
-const argumentsObject=value=>{if(typeof value==='string')try{return JSON.parse(value);}catch{return {};}return value&&typeof value==='object'?value:{};};
+const argumentsObject=value=>{if(typeof value==='string')try{value=JSON.parse(value);}catch{return {};}return value&&typeof value==='object'&&!Array.isArray(value)?value:{};};
 const queryIdentity=value=>{const args=argumentsObject(value);return typeof args.query==='string'&&Array.isArray(args.paper_ids)?JSON.stringify([args.query.trim(),args.paper_ids.slice().sort()]):null;};
 
 /** Explicit request and call identities form groups; adjacent timestamps never do. */
@@ -146,16 +147,33 @@ export function buildExecutionGraph(timeline,batches){
   const events=timeline.events.map((event,index)=>{
     const snapshot=executionBatchAt(timeline,batches,index);
     const node=event.kind==='tool'&&snapshot?.batch.linked?(snapshot.complete?'observation':'action'):event.node;
-    return {...event,node,edge:undefined};
+    return {...event,node,edge:undefined,maintenance:event.node==='compaction'&&event.kind!=='finish'};
   });
+  let businessNode='question',previousBusiness;
   for(let index=1;index<events.length;index++){
     const previous=events[index-1],event=events[index],raw=timeline.events[index];
+    if(event.maintenance){event.node=businessNode;continue;}
     if(event.kind==='finish')event.node=previous.node;
     if(previous.node!==event.node)event.edge=previous.node+'-'+event.node;
-    if(event.node==='decision'&&event.moment==='start'&&raw.edge==='observation-decision')event.edge='observation-decision';
+    if(event.node==='decision'&&event.moment==='start'&&(raw.edge==='observation-decision'||previousBusiness?.kind==='tool'&&previousBusiness.moment==='end'))event.edge='observation-decision';
     if(raw.edge==='generate-generate')event.edge=raw.edge;
+    businessNode=event.node;previousBusiness=raw;
   }
   return {...timeline,events};
+}
+
+/** Compression is context maintenance, not question preparation or a new tool decision. */
+export function executionCompactionAt(timeline,index){
+  const past=timeline.events.slice(0,index+1).filter(event=>event.kind!=='finish'&&event.node==='compaction');
+  if(!past.length)return {state:'none',key:null,reason:null,before_tokens:null,after_tokens:null,threshold_tokens:null,summary:null,note:null};
+  const host=past.findLast(event=>event.kind==='compaction'),event=host?.status==='running'?host:past.at(-1);
+  const detail=executionDetailAt(event.detail,event),input=argumentsObject(detail?.input);
+  const output=event.moment==='end'?argumentsObject(detail?.output?.text):{};
+  const number=(...values)=>values.find(finite)??null;
+  const before=number(output.before_tokens,output.tokens_before,input.before_tokens,input.tokens_before),after=event.moment==='end'?number(output.after_tokens,output.tokens_after):null;
+  const reason=typeof output.reason==='string'?output.reason:typeof input.reason==='string'?input.reason:null;
+  const state=event.status==='error'||output.aborted===true?'error':event.moment==='start'?'running':before!==null&&after!==null&&after>=before?'unchanged':'completed';
+  return {state,key:event.key,reason,before_tokens:before,after_tokens:after,threshold_tokens:number(input.threshold_tokens),summary:typeof output.summary==='string'?output.summary:null,note:typeof output.note==='string'?output.note:null};
 }
 
 /** The conversation keeps a short live status; complete history belongs to each reply. */
@@ -189,7 +207,9 @@ const graphEdges=[
   ['observation-decision','M139.21 306.54 A142 142 0 0 1 225.66 156.81']
 ];
 const coreNodes=new Set(['decision','action','observation']);
-const nodeTitle=node=>graphNodes.find(entry=>entry[0]===node)?.[4]??'执行记录';
+const nodeTitle=node=>node==='compaction'?'上下文压缩':graphNodes.find(entry=>entry[0]===node)?.[4]??'执行记录';
+const compactionReason=reason=>({threshold:'达到压缩阈值',overflow:'上下文容量不足',manual:'手动压缩'}[reason]??reason??'触发原因未记录');
+const tokenEstimate=value=>value===null?'未记录':'约 '+value.toLocaleString('zh-CN')+' token';
 
 export class ExecutionPlayback {
   constructor(root,turn,details={},options={}){
@@ -218,8 +238,8 @@ export class ExecutionPlayback {
     const eventsHead=make('div','replay-section-heading replay-events-heading');eventsHead.append(make('h2',null,'执行记录'));this.listCounter=make('span');eventsHead.append(this.listCounter);
     this.eventsList=make('ol','replay-events');this.eventsList.setAttribute('aria-label','本轮执行事件');overview.append(eventsHead,this.eventsList);
     const inspector=make('section','replay-inspector'),detailHead=make('div','replay-section-heading');detailHead.append(make('h2',null,'事件详情'));this.phaseLabel=make('span','replay-phase');detailHead.append(this.phaseLabel);
-    const content=make('div','replay-inspector-content');this.batchRoot=make('section','replay-batch');this.batchRoot.hidden=true;this.batchExpanded=true;
-    this.detailRoot=make('div','replay-detail');content.append(this.batchRoot,this.detailRoot);inspector.append(detailHead,content);body.append(overview,inspector);this.root.append(body);
+    const content=make('div','replay-inspector-content');this.compactionRoot=make('section','replay-compaction');this.batchRoot=make('section','replay-batch');this.batchRoot.hidden=true;this.batchExpanded=true;
+    this.detailRoot=make('div','replay-detail');content.append(this.compactionRoot,this.batchRoot,this.detailRoot);inspector.append(detailHead,content);body.append(overview,inspector);this.root.append(body);
     this.note=make('p','replay-note');this.root.append(this.note);
   }
   buildGraph(){
@@ -286,30 +306,40 @@ export class ExecutionPlayback {
   }
   paint(force=false){
     const event=this.timeline.events[this.index],duration=this.timeline.duration,progress=duration?Math.min(100,this.position/duration*100):0;
-    this.root.classList.toggle('is-animating',this.playing||this.follow);this.play.textContent=this.follow?'暂停跟随':this.playing?'暂停':this.position>=duration&&duration>0?'重新播放':'播放';this.play.disabled=!this.timeline.hasRecords;
+    const graphEvent=this.graphTimeline.events[this.index];
+    this.root.classList.toggle('is-maintaining',graphEvent.maintenance);this.root.classList.toggle('is-animating',(this.playing||this.follow)&&!graphEvent.maintenance);this.play.textContent=this.follow?'暂停跟随':this.playing?'暂停':this.position>=duration&&duration>0?'重新播放':'播放';this.play.disabled=!this.timeline.hasRecords;
     this.previous.disabled=this.index===0;this.next.disabled=this.index===this.timeline.events.length-1;this.liveButton.disabled=this.follow;
     this.slider.max=String(Math.max(1,duration));this.slider.value=String(this.position);this.slider.disabled=!this.timeline.hasRecords;this.slider.style.setProperty('--replay-progress',progress+'%');this.slider.setAttribute('aria-valuetext',executionTime(this.position)+'，'+event.title);
     this.clock.textContent=executionTime(this.position)+' / '+executionTime(duration);this.durationLabel.textContent=this.live?'实时':executionTime(duration);this.eventCount.textContent=`事件 ${this.index+1} / ${this.timeline.events.length}`;
     if(force||this.paintedKey!==event.key){
-      const graphEvent=this.graphTimeline.events[this.index],past=this.graphTimeline.events.slice(0,this.index+1),visited=new Set(past.map(item=>item.node));
+      const past=this.graphTimeline.events.slice(0,this.index+1),visited=new Set(past.map(item=>item.node));
       if(graphEvent.edge==='observation-decision')visited.add('observation');
-      const decisions=new Set(past.filter(item=>item.kind==='model'&&item.node==='decision').map(item=>item.id)).size,tools=new Set(past.filter(item=>item.kind==='tool').map(item=>item.id)).size;
-      const failed=new Set(past.filter(item=>item.status==='error').map(item=>item.node));
-      this.orbitPhase.textContent=event.kind==='finish'?event.title:nodeTitle(graphEvent.node);
+      const decisions=new Set(past.filter(item=>item.kind==='model'&&item.node==='decision'&&!item.maintenance).map(item=>item.id)).size,tools=new Set(past.filter(item=>item.kind==='tool').map(item=>item.id)).size;
+      const failed=new Set(past.filter(item=>item.status==='error'&&!item.maintenance).map(item=>item.node));
+      this.orbitPhase.textContent=event.kind==='finish'?event.title:graphEvent.maintenance?'等待继续':nodeTitle(graphEvent.node);
       this.orbitCount.textContent=!this.timeline.hasRecords?'暂无执行记录':decisions+' 次决策 · '+tools+' 次工具';
       const previous=this.timeline.events[this.index-1],recordedEdges=new Set(past.map(item=>item.edge));
       const route=event.edge&&previous?nodeTitle(previous.node)+' → '+nodeTitle(event.node):event.title;
       const batch=executionBatchAt(this.timeline,this.batches,this.index);
-      this.transition.textContent=!this.timeline.hasRecords?'暂无执行记录':event.kind==='finish'?event.title:event.kind==='tool'&&batch?(batch.batch.origin==='host_plan'?'按计划执行':batch.batch.origin==='model'?'模型发起':'单次工具记录')+' · '+(batch.known_total?'已返回 '+batch.returned+'/'+batch.total:'已返回 '+batch.returned+' 项，批次总数未记录')+(batch.complete?' · 本批结果就绪':batch.parallel?' · 并行执行中':''):route;
-      this.phaseLabel.textContent=event.moment==='start'?'请求发出':event.moment==='end'?'结果返回':event.kind==='finish'?'本轮结束':'用户输入';
-      for(const [key,node] of this.nodeElements){node.classList.toggle('active',key===graphEvent.node);node.classList.toggle('visited',visited.has(key));node.classList.toggle('failed',failed.has(key));node.classList.toggle('unrecorded',!this.usedNodes.has(key));node.setAttribute('aria-disabled',String(!this.usedNodes.has(key)));node.setAttribute('tabindex',this.usedNodes.has(key)?'0':'-1');node.setAttribute('aria-label',this.usedNodes.has(key)?'查看'+nodeTitle(key)+'的事件':nodeTitle(key)+'，暂无记录');const subtitle=node.querySelector('.flow-node-subtitle');if(subtitle)subtitle.textContent=this.usedNodes.has(key)?graphNodes.find(entry=>entry[0]===key)[5]:this.timeline.hasRecords?'本轮未使用':'暂无记录';}
+      this.transition.textContent=!this.timeline.hasRecords?'暂无执行记录':graphEvent.maintenance?'上下文维护 · 查看右侧压缩模块':event.kind==='finish'?event.title:event.kind==='tool'&&batch?(batch.batch.origin==='host_plan'?'按计划执行':batch.batch.origin==='model'?'模型发起':'单次工具记录')+' · '+(batch.known_total?'已返回 '+batch.returned+'/'+batch.total:'已返回 '+batch.returned+' 项，批次总数未记录')+(batch.complete?' · 本批结果就绪':batch.parallel?' · 并行执行中':''):route;
+      this.phaseLabel.textContent=event.kind==='compaction'?(event.moment==='start'?'压缩进行中':'压缩结果'):event.moment==='start'?'请求发出':event.moment==='end'?'结果返回':event.kind==='finish'?'本轮结束':'用户输入';
+      for(const [key,node] of this.nodeElements){node.classList.toggle('active',key===graphEvent.node&&!graphEvent.maintenance);node.classList.toggle('visited',visited.has(key));node.classList.toggle('failed',failed.has(key));node.classList.toggle('unrecorded',!this.usedNodes.has(key));node.setAttribute('aria-disabled',String(!this.usedNodes.has(key)));node.setAttribute('tabindex',this.usedNodes.has(key)?'0':'-1');node.setAttribute('aria-label',this.usedNodes.has(key)?'查看'+nodeTitle(key)+'的事件':nodeTitle(key)+'，暂无记录');const subtitle=node.querySelector('.flow-node-subtitle');if(subtitle)subtitle.textContent=this.usedNodes.has(key)?graphNodes.find(entry=>entry[0]===key)[5]:this.timeline.hasRecords?'本轮未使用':'暂无记录';}
       for(const [key,edge] of this.edgeElements){edge.classList.toggle('recorded',recordedEdges.has(key));edge.classList.toggle('flow-current',graphEvent.edge===key);}
       this.renderBatch(batch);
+      this.renderCompaction(executionCompactionAt(this.timeline,this.index),Boolean(graphEvent.maintenance));
       for(const [index,button] of this.eventButtons.entries()){button.classList.toggle('selected',index===this.index);if(index===this.index)button.setAttribute('aria-current','step');else button.removeAttribute('aria-current');}
       if(this.paintedKey!==event.key){this.detailRoot.dataset.tab=event.moment==='end'?'output':'input';this.renderDetail(event);revealExecutionEvent(this.eventsList,this.eventButtons[this.index]);}
       else this.renderDetail(event);
       this.paintedKey=event.key;
     }
+  }
+  renderCompaction(view,active){
+    this.compactionRoot.replaceChildren();this.compactionRoot.classList.toggle('active',active);this.compactionRoot.dataset.state=view.state;
+    const head=make('div','replay-compaction-head'),state={none:'尚未压缩',running:'压缩中',completed:'已完成',unchanged:'占用未减少',error:'未完成'}[view.state];
+    head.append(make('h2',null,'上下文压缩'),make('span','replay-compaction-status',state));
+    const open=make('button','replay-batch-toggle','查看压缩详情');open.type='button';open.disabled=!view.key;open.addEventListener('click',()=>this.select(this.timeline.events.findIndex(event=>event.key===view.key)));head.append(open);this.compactionRoot.append(head);
+    const text=view.state==='none'?'本轮尚未发生压缩':compactionReason(view.reason)+(view.before_tokens!==null?' · '+tokenEstimate(view.before_tokens)+(view.after_tokens!==null?' → '+tokenEstimate(view.after_tokens):''):'');
+    this.compactionRoot.append(make('p','replay-compaction-summary',text));
   }
   renderBatch(snapshot){
     const savedScroll=this.batchRoot.scrollTop;this.batchRoot.replaceChildren();this.batchRoot.hidden=!snapshot;if(!snapshot)return;
@@ -329,6 +359,7 @@ export class ExecutionPlayback {
     }this.batchRoot.scrollTop=savedScroll;
   }
   renderDetail(event){
+    if(event.kind==='compaction'){this.renderCompactionDetail(event);return;}
     const detail=event.id&&executionDetailAt(this.details[event.id],event);
     if(detail){renderTrace(this.detailRoot,detail);return;}
     this.detailRoot.replaceChildren();const head=make('header','trace-head');head.append(make('h1',null,event.title),make('p',null,executionTime(event.at)));this.detailRoot.append(head);
@@ -336,7 +367,17 @@ export class ExecutionPlayback {
     if(event.id&&event.item?.has_details){const note=make('p','trace-description',this.errors[event.id]?'这次请求的详情暂时无法读取。':'正在等待请求详情。');this.detailRoot.append(note);}
     if(event.legacy)this.detailRoot.append(make('p','trace-description','这条旧记录没有请求开始时间，仅展示已保存的完成事件。'));
   }
-  dispose(){this.disposed=true;this.pause();document.removeEventListener('visibilitychange',this.visibility);this.root.classList.remove('execution-player','orbit-player','is-animating','graph-collapsed');}
+  renderCompactionDetail(event){
+    const view=executionCompactionAt(this.timeline,this.index),head=make('header','trace-head');this.detailRoot.replaceChildren();
+    head.append(make('h1',null,'上下文压缩'),make('p',null,executionTime(event.at)+' · '+compactionReason(view.reason)));this.detailRoot.append(head);
+    const values=make('dl','replay-compaction-values');
+    for(const [label,text] of [['压缩前估算',tokenEstimate(view.before_tokens)],['压缩后估算',tokenEstimate(view.after_tokens)],['自动压缩阈值',tokenEstimate(view.threshold_tokens)]])values.append(make('dt',null,label),make('dd',null,text));
+    this.detailRoot.append(values);
+    if(view.note)this.detailRoot.append(make('p','replay-event-content',view.note));
+    if(view.summary!==null){const section=make('section','trace-section');section.append(make('h2',null,'保留的摘要'),make('pre','trace-code',view.summary||'本次没有生成新的摘要。'));this.detailRoot.append(section);}
+    else this.detailRoot.append(make('p','trace-description',view.state==='running'?'压缩完成后显示结果和保留的摘要。':'这条记录没有保存压缩摘要。'));
+  }
+  dispose(){this.disposed=true;this.pause();document.removeEventListener('visibilitychange',this.visibility);this.root.classList.remove('execution-player','orbit-player','is-animating','graph-collapsed','is-maintaining');}
 }
 
 /** POST streams retain ownership headers; transport loss never retries an inference. */

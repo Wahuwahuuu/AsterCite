@@ -179,6 +179,19 @@
 .orbit-player .replay-inspector > .replay-section-heading { padding: 0 28px; border-bottom: 1px solid #e7ece1; }
 .orbit-player .replay-inspector .replay-phase { color: #54714b; }
 .orbit-player .replay-inspector-content { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.orbit-player .replay-compaction { flex: 0 0 auto; padding: 12px 28px; border-bottom: 1px solid var(--replay-line); background: #f8faf5; }
+.orbit-player .replay-compaction.active { background: #eaf1e1; }
+.orbit-player .replay-compaction-head { display: flex; align-items: center; gap: 12px; }
+.orbit-player .replay-compaction h2 { margin: 0; font-size: 13px; font-weight: 600; color: #2c4937; }
+.orbit-player .replay-compaction-status { color: #526b46; font-size: 12px; }
+.orbit-player .replay-compaction[data-state="error"] .replay-compaction-status { color: #8b5627; }
+.orbit-player .replay-compaction .replay-batch-toggle { margin-left: auto; }
+.orbit-player .replay-compaction .replay-batch-toggle:disabled { color: #6d7d65; cursor: default; text-decoration: none; }
+.orbit-player .replay-compaction-summary { margin: 4px 0 0; color: #5c7062; font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.orbit-player .replay-compaction-values { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 12px 20px; margin: 20px 0; padding: 0 0 20px; border-bottom: 1px solid var(--replay-line); font-size: 13px; }
+.orbit-player .replay-compaction-values dt { color: #526b46; }
+.orbit-player .replay-compaction-values dd { margin: 0; color: #273e2d; font-variant-numeric: tabular-nums; }
+.orbit-player.is-maintaining .orbit-phase { fill: #5c7062; }
 .orbit-player .replay-batch { flex: 0 1 auto; min-height: 0; max-height: 44%; padding: 16px 28px 12px; overflow: auto; overscroll-behavior: contain; border-bottom: 1px solid var(--replay-line); background: #f5f8ef; scrollbar-width: thin; scrollbar-color: #a2b497 transparent; }
 .orbit-player .replay-batch-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .orbit-player .replay-batch-head > div { display: flex; align-items: center; gap: 12px; }
