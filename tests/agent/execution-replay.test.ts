@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {buildExecutionTimeline,executionDetailAt,executionIndexAt,executionNodeIndex,type ReplayTurn} from '../../web/activity.js';
+import {buildExecutionTimeline,executionDetailAt,executionIndexAt,executionNodeIndex,revealExecutionEvent,type ReplayTurn} from '../../web/activity.js';
 import {formatTraceValue} from '../../web/trace-view.js';
 import type {WebActivity,WebExecutionDetail} from '../../agent/web-session.ts';
 
@@ -85,6 +85,18 @@ test('graph navigation includes answer-only completions and legacy events withou
   const legacy=buildExecutionTimeline(turn([item('old','tool',40)]));
   assert.equal(legacy.events[executionNodeIndex(legacy,'observation')].key,'old:end');
   assert.deepEqual(timeline,before);
+});
+
+test('following an event scrolls only the event list and leaves visible entries in place',()=>{
+  const bounds=(top:number,height:number)=>({x:0,y:top,top,bottom:top+height,left:0,right:300,width:300,height,toJSON:()=>({})});
+  const outer={scrollTop:125},list={scrollTop:40,clientTop:1,clientHeight:100,getBoundingClientRect:()=>bounds(200,102),parentElement:outer};
+  const entry=(top:number,height:number)=>({getBoundingClientRect:()=>bounds(top,height),scrollIntoView:()=>assert.fail('ancestor scrolling is forbidden')});
+  revealExecutionEvent(list,entry(330,40));assert.equal(list.scrollTop,109);assert.equal(outer.scrollTop,125);
+  list.scrollTop=40;revealExecutionEvent(list,entry(180,20));assert.equal(list.scrollTop,19);
+  list.scrollTop=40;revealExecutionEvent(list,entry(220,30));assert.equal(list.scrollTop,40);
+  revealExecutionEvent(list,entry(240,180));assert.equal(list.scrollTop,79,'an oversized entry aligns its start');
+  list.clientHeight=0;revealExecutionEvent(list,entry(400,40));assert.equal(list.scrollTop,79);
+  revealExecutionEvent(list,undefined);assert.equal(outer.scrollTop,125);
 });
 
 test('live requests have no future completion and absent records do not become a simulated loop',()=>{

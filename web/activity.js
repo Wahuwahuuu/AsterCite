@@ -56,6 +56,15 @@ export function executionNodeIndex(timeline,node,after=-1){
   return next>=0?next:timeline.events.findIndex(matches);
 }
 
+/** Keep event following inside the list; scrolling ancestors would hide the graph. */
+export function revealExecutionEvent(list,item){
+  if(!item||list.clientHeight<=0)return;
+  const viewportTop=list.getBoundingClientRect().top+list.clientTop,bounds=item.getBoundingClientRect();
+  const top=bounds.top-viewportTop,bottom=bounds.bottom-viewportTop;
+  if(top<0)list.scrollTop=Math.max(0,list.scrollTop+top);
+  else if(bottom>list.clientHeight)list.scrollTop+=Math.min(top,bottom-list.clientHeight);
+}
+
 /** Historical start events must not reveal their future output or final duration. */
 export function executionDetailAt(detail,event){
   if(!detail)return null;
@@ -205,7 +214,7 @@ export class ExecutionPlayback {
       for(const [key,node] of this.nodeElements){node.classList.toggle('active',key===event.node);node.classList.toggle('visited',visited.has(key));node.classList.toggle('failed',failed.has(key));node.classList.toggle('unrecorded',!this.usedNodes.has(key));node.setAttribute('aria-disabled',String(!this.usedNodes.has(key)));node.setAttribute('tabindex',this.usedNodes.has(key)?'0':'-1');node.setAttribute('aria-label',this.usedNodes.has(key)?'查看'+nodeTitle(key)+'的事件':nodeTitle(key)+'，暂无记录');const subtitle=node.querySelector('.flow-node-subtitle');if(subtitle)subtitle.textContent=this.usedNodes.has(key)?graphNodes.find(entry=>entry[0]===key)[5]:this.timeline.hasRecords?'本轮未使用':'暂无记录';}
       for(const [key,edge] of this.edgeElements){edge.classList.toggle('recorded',recordedEdges.has(key));edge.classList.toggle('flow-current',event.edge===key);}
       for(const [index,button] of this.eventButtons.entries()){button.classList.toggle('selected',index===this.index);if(index===this.index)button.setAttribute('aria-current','step');else button.removeAttribute('aria-current');}
-      if(this.paintedKey!==event.key){this.detailRoot.dataset.tab=event.moment==='end'?'output':'input';this.renderDetail(event);this.eventsList.querySelector('[aria-current]')?.scrollIntoView({block:'nearest'});}
+      if(this.paintedKey!==event.key){this.detailRoot.dataset.tab=event.moment==='end'?'output':'input';this.renderDetail(event);revealExecutionEvent(this.eventsList,this.eventButtons[this.index]);}
       else this.renderDetail(event);
       this.paintedKey=event.key;
     }

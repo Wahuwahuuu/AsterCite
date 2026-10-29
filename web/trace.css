@@ -118,7 +118,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow: hidden;
   padding: 0 20px;
   background: #f6f8f1;
   scrollbar-width: thin;
@@ -127,7 +127,7 @@
 .orbit-player .replay-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; flex-shrink: 0; }
 .orbit-player .replay-section-heading h2 { margin: 0; font-size: 13px; line-height: 1.5; font-weight: 650; color: #2c4937; }
 .orbit-player .replay-section-heading > span { font-size: 11px; color: var(--replay-muted); }
-.orbit-player .replay-graph { margin: 8px 0 0; height: clamp(350px, 44vh, 460px); min-height: 350px; flex: 0 0 auto; overflow: visible; width: 100%; }
+.orbit-player .replay-graph { margin: 8px 0 0; height: clamp(350px, 44vh, 460px); min-height: 0; flex: 0 1 auto; overflow: hidden; width: 100%; }
 .orbit-player .replay-graph svg { display: block; width: 100%; min-width: 0; height: 100%; }
 .orbit-player .orbit-title { fill: #5c7062; font-size: 19px; font-weight: 500; }
 .orbit-player .orbit-phase { fill: #244732; font-size: 24px; font-weight: 600; }
@@ -169,7 +169,7 @@
 .orbit-player .flow-node.failed.active .flow-node-subtitle { fill: #785027; }
 .orbit-player .flow-node.failed.active .orbit-node-icon { stroke: #785027; }
 .orbit-player .replay-events-heading { min-height: 40px; border-top: 1px solid var(--replay-line); }
-.orbit-player .replay-events { min-height: 120px; flex: 1; margin: 0; padding: 0 0 16px; border: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #a3b89b transparent; }
+.orbit-player .replay-events { min-height: 72px; flex: 1 1 96px; margin: 0; padding: 0 0 16px; border: 0; overflow: auto; overscroll-behavior: contain; scroll-behavior: auto; scrollbar-width: thin; scrollbar-color: #a3b89b transparent; }
 .orbit-player .replay-events li { margin-bottom: 2px; }
 .orbit-player .replay-events button { display: grid; grid-template-columns: 64px minmax(0,1fr); align-items: start; gap: 10px; padding: 10px 11px; border-radius: 8px; color: #3d573f; font-size: 12px; line-height: 1.6; }
 .orbit-player .replay-events button:hover { background: #edf2e5; }

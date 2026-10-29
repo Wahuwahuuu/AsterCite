@@ -10,4 +10,5 @@ export function readQuestionStream(response:Response,onActivity:(event:WebActivi
 export function buildExecutionTimeline(turn:ReplayTurn,details?:Record<string,WebExecutionDetail>):ExecutionTimeline;
 export function executionIndexAt(timeline:ExecutionTimeline,at:number):number;
 export function executionNodeIndex(timeline:ExecutionTimeline,node:string,after?:number):number;
+export function revealExecutionEvent(list:Pick<HTMLElement,'scrollTop'|'clientTop'|'clientHeight'|'getBoundingClientRect'>,item:Pick<HTMLElement,'getBoundingClientRect'>|undefined):void;
 export function executionDetailAt(detail:WebExecutionDetail|undefined,event:ExecutionStep):(WebExecutionDetail&{playback_pending?:boolean})|null;
