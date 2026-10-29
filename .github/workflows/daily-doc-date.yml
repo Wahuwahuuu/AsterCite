@@ -1,6 +1,10 @@
 name: 文档日期更新
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/daily-doc-date.yml'
   schedule:
     - cron: '17 1,13 * * *'
   workflow_dispatch:
