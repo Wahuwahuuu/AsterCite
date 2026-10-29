@@ -127,7 +127,7 @@
 .orbit-player .replay-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; flex-shrink: 0; }
 .orbit-player .replay-section-heading h2 { margin: 0; font-size: 13px; line-height: 1.5; font-weight: 650; color: #2c4937; }
 .orbit-player .replay-section-heading > span { font-size: 11px; color: var(--replay-muted); }
-.orbit-player .replay-graph { margin: 8px 0 0; height: clamp(350px, 44vh, 460px); min-height: 0; flex: 0 1 auto; overflow: hidden; width: 100%; }
+.orbit-player .replay-graph { position: relative; margin: 8px 0 0; height: clamp(350px, 44vh, 460px); min-height: 0; flex: 0 1 auto; overflow: hidden; width: 100%; }
 .orbit-player .replay-graph svg { display: block; width: 100%; min-width: 0; height: 100%; }
 .orbit-player .orbit-title { fill: #5c7062; font-size: 19px; font-weight: 500; }
 .orbit-player .orbit-phase { fill: #244732; font-size: 24px; font-weight: 600; }
@@ -178,7 +178,30 @@
 .orbit-player .replay-inspector { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px minmax(0,1fr); border-left: 1px solid var(--replay-line); background: #fcfdf9; }
 .orbit-player .replay-inspector > .replay-section-heading { padding: 0 28px; border-bottom: 1px solid #e7ece1; }
 .orbit-player .replay-inspector .replay-phase { color: #54714b; }
-.orbit-player .replay-detail { min-height: 0; padding: 22px 28px 28px; color: #273e2d; overflow: auto; scrollbar-width: thin; scrollbar-color: #a2b497 transparent; }
+.orbit-player .replay-inspector-content { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.orbit-player .replay-compaction-values { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 12px 20px; margin: 20px 0; padding: 0 0 20px; border-bottom: 1px solid var(--replay-line); font-size: 13px; }
+.orbit-player .replay-compaction-values dt { color: #526b46; }
+.orbit-player .replay-compaction-values dd { margin: 0; color: #273e2d; font-variant-numeric: tabular-nums; }
+.orbit-player.is-maintaining .orbit-phase { fill: #5c7062; }
+.orbit-player .replay-batch { flex: 0 1 auto; min-height: 0; max-height: 44%; padding: 16px 28px 12px; overflow: auto; overscroll-behavior: contain; border-bottom: 1px solid var(--replay-line); background: #f5f8ef; scrollbar-width: thin; scrollbar-color: #a2b497 transparent; }
+.orbit-player .replay-batch-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.orbit-player .replay-batch-head > div { display: flex; align-items: center; gap: 12px; }
+.orbit-player .replay-batch h2 { margin: 0; color: #2c4937; font-size: 14px; font-weight: 600; }
+.orbit-player .replay-batch-origin { color: #526b46; font-size: 12px; }
+.orbit-player .replay-batch-toggle { border: 0; padding: 5px 0; color: #476249; background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+.orbit-player .replay-batch-toggle:hover { color: #24563f; text-decoration: underline; text-underline-offset: 3px; }
+.orbit-player .replay-batch-progress { margin: 4px 0 10px; color: #5c7062; font-size: 12px; font-variant-numeric: tabular-nums; }
+.orbit-player .replay-batch-calls { list-style: none; margin: 0; padding: 0; }
+.orbit-player .replay-batch-calls li + li { border-top: 1px solid #e0e8d9; }
+.orbit-player .replay-batch-call { display: grid; grid-template-columns: 138px minmax(0,1fr) 56px; align-items: center; gap: 12px; width: 100%; border: 0; border-radius: 6px; padding: 9px 10px; color: #35543b; background: transparent; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.orbit-player .replay-batch-call:hover:enabled, .orbit-player .replay-batch-call.selected { background: #e5eedb; }
+.orbit-player .replay-batch-call:disabled { cursor: default; color: #62745d; }
+.orbit-player .replay-batch-tool { overflow-wrap: anywhere; font: 12px Consolas, monospace; }
+.orbit-player .replay-batch-query { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.orbit-player .replay-batch-status { text-align: right; color: #476249; }
+.orbit-player .replay-batch-call[data-status="running"] .replay-batch-status { color: #24563f; font-weight: 600; }
+.orbit-player .replay-batch-call[data-status="error"] .replay-batch-status { color: #8b5627; }
+.orbit-player .replay-detail { flex: 1 1 auto; min-height: 0; padding: 22px 28px 28px; color: #273e2d; overflow: auto; scrollbar-width: thin; scrollbar-color: #a2b497 transparent; }
 .orbit-player .replay-detail .trace-head h1 { color: #25422f; font-size: 21px; font-weight: 600; line-height: 1.5; margin-bottom: 6px; letter-spacing: -.015em; }
 .orbit-player .replay-detail .trace-head p { color: #5e715b; font-size: 12px; margin: 0 0 20px; }
 .orbit-player .replay-detail .trace-tabs { top: -22px; padding-top: 8px; gap: 24px; margin: 0 0 21px; border-color: #d8e2ce; background: #fcfdf9; }
