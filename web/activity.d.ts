@@ -10,4 +10,14 @@ export function readQuestionStream(response:Response,onActivity:(event:WebActivi
 export function buildExecutionTimeline(turn:ReplayTurn,details?:Record<string,WebExecutionDetail>):ExecutionTimeline;
 export function executionIndexAt(timeline:ExecutionTimeline,at:number):number;
 export function executionNodeIndex(timeline:ExecutionTimeline,node:string,after?:number):number;
+export function revealExecutionEvent(list:Pick<HTMLElement,'scrollTop'|'clientTop'|'clientHeight'|'getBoundingClientRect'>,item:Pick<HTMLElement,'getBoundingClientRect'>|undefined):void;
 export function executionDetailAt(detail:WebExecutionDetail|undefined,event:ExecutionStep):(WebExecutionDetail&{playback_pending?:boolean})|null;
+export interface ExecutionBatchCall {key:string;id?:string;tool:string;query:string;identity:string|null}
+export interface ExecutionBatch {id:string;origin:'model'|'host_plan'|'unknown';linked:boolean;parent_id?:string;stage:string;calls:ExecutionBatchCall[];declared:ExecutionBatchCall[]}
+export interface ExecutionBatchView {
+  batch:ExecutionBatch;calls:Array<Omit<ExecutionBatchCall,'identity'>&{status:'queued'|'running'|'completed'|'error'|'unexecuted';planned:boolean;start?:ExecutionStep;end?:ExecutionStep}>;
+  known_total:boolean;total:number|null;returned:number;started:number;running:number;parallel:boolean;complete:boolean;failed:number;
+}
+export function buildExecutionBatches(turn:ReplayTurn,details?:Record<string,WebExecutionDetail>):ExecutionBatch[];
+export function executionBatchAt(timeline:ExecutionTimeline,batches:ExecutionBatch[],index:number):ExecutionBatchView|null;
+export function buildExecutionGraph(timeline:ExecutionTimeline,batches:ExecutionBatch[]):ExecutionTimeline;
