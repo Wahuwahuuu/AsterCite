@@ -114,5 +114,3 @@ TypeScript 负责 Pi 会话编排、记忆和 CLI；Python worker 负责本地�
 - [版本记录](CHANGELOG.md)
 
 原创代码采用 [MIT](LICENSE) 许可，数据与依赖来源见 [第三方说明](THIRD_PARTY.md)。
-
-<sub>文档更新日期：2026-10-29。</sub>
