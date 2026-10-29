@@ -1,6 +1,6 @@
 {
   "name": "astercite",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "private": true,
   "description": "A research paper question-answering workspace with a web interface and CLI",
   "license": "MIT",
