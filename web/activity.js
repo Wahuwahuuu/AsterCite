@@ -234,12 +234,12 @@ export class ExecutionPlayback {
     const captions=make('div','replay-captions');this.eventCount=make('span');this.durationLabel=make('span');captions.append(make('span',null,'开始'),this.eventCount,this.durationLabel);timeline.append(captions);transport.append(timeline);
     const body=make('div','replay-body'),overview=make('section','replay-overview'),graphHead=make('div','replay-section-heading');
     graphHead.append(make('h2',null,'执行全景'),make('span',null,'点击节点，切换对应事件'));overview.append(graphHead);
-    this.graph=make('div','replay-graph');this.graph.setAttribute('aria-label','模型决策、整批工具执行、结果就绪组成外层循环');this.transition=make('p','replay-transition');overview.append(this.graph,this.transition);this.buildGraph();
+    this.graph=make('div','replay-graph');this.graph.setAttribute('aria-label','模型决策循环与独立的上下文压缩块');this.transition=make('p','replay-transition');overview.append(this.graph,this.transition);this.buildGraph();
     const eventsHead=make('div','replay-section-heading replay-events-heading');eventsHead.append(make('h2',null,'执行记录'));this.listCounter=make('span');eventsHead.append(this.listCounter);
     this.eventsList=make('ol','replay-events');this.eventsList.setAttribute('aria-label','本轮执行事件');overview.append(eventsHead,this.eventsList);
     const inspector=make('section','replay-inspector'),detailHead=make('div','replay-section-heading');detailHead.append(make('h2',null,'事件详情'));this.phaseLabel=make('span','replay-phase');detailHead.append(this.phaseLabel);
-    const content=make('div','replay-inspector-content');this.compactionRoot=make('section','replay-compaction');this.batchRoot=make('section','replay-batch');this.batchRoot.hidden=true;this.batchExpanded=true;
-    this.detailRoot=make('div','replay-detail');content.append(this.compactionRoot,this.batchRoot,this.detailRoot);inspector.append(detailHead,content);body.append(overview,inspector);this.root.append(body);
+    const content=make('div','replay-inspector-content');this.batchRoot=make('section','replay-batch');this.batchRoot.hidden=true;this.batchExpanded=true;
+    this.detailRoot=make('div','replay-detail');content.append(this.batchRoot,this.detailRoot);inspector.append(detailHead,content);body.append(overview,inspector);this.root.append(body);
     this.note=make('p','replay-note');this.root.append(this.note);
   }
   buildGraph(){
@@ -264,6 +264,13 @@ export class ExecutionPlayback {
       const jump=()=>{if(!this.graphTimeline)return;const next=executionNodeIndex(this.graphTimeline,key,this.index);if(key==='action')this.batchExpanded=true;if(next>=0)this.select(next);};
       group.addEventListener('click',jump);group.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();jump();}});this.nodeElements.set(key,group);svg.append(group);
     }this.graph.append(svg);
+    this.compactionRoot=make('button','replay-compaction-node');this.compactionRoot.type='button';this.compactionRoot.dataset.node='compaction';
+    this.compactionRoot.addEventListener('click',()=>{
+      const view=executionCompactionAt(this.timeline,this.index);
+      const target=view.key?this.timeline.events.findIndex(event=>event.key===view.key):this.timeline.events.findIndex(event=>event.node==='compaction'&&event.kind!=='finish');
+      if(target>=0)this.select(target);
+    });
+    this.graph.append(this.compactionRoot);
   }
   update(turn,details={},options={}){
     if(this.disposed)return;const previousKey=this.timeline?.events[this.index]?.key,wasFollowing=this.follow;
@@ -321,7 +328,7 @@ export class ExecutionPlayback {
       const previous=this.timeline.events[this.index-1],recordedEdges=new Set(past.map(item=>item.edge));
       const route=event.edge&&previous?nodeTitle(previous.node)+' → '+nodeTitle(event.node):event.title;
       const batch=executionBatchAt(this.timeline,this.batches,this.index);
-      this.transition.textContent=!this.timeline.hasRecords?'暂无执行记录':graphEvent.maintenance?'上下文维护 · 查看右侧压缩模块':event.kind==='finish'?event.title:event.kind==='tool'&&batch?(batch.batch.origin==='host_plan'?'按计划执行':batch.batch.origin==='model'?'模型发起':'单次工具记录')+' · '+(batch.known_total?'已返回 '+batch.returned+'/'+batch.total:'已返回 '+batch.returned+' 项，批次总数未记录')+(batch.complete?' · 本批结果就绪':batch.parallel?' · 并行执行中':''):route;
+      this.transition.textContent=!this.timeline.hasRecords?'暂无执行记录':graphEvent.maintenance?'上下文压缩 · 独立维护':event.kind==='finish'?event.title:event.kind==='tool'&&batch?(batch.batch.origin==='host_plan'?'按计划执行':batch.batch.origin==='model'?'模型发起':'单次工具记录')+' · '+(batch.known_total?'已返回 '+batch.returned+'/'+batch.total:'已返回 '+batch.returned+' 项，批次总数未记录')+(batch.complete?' · 本批结果就绪':batch.parallel?' · 并行执行中':''):route;
       this.phaseLabel.textContent=event.kind==='compaction'?(event.moment==='start'?'压缩进行中':'压缩结果'):event.moment==='start'?'请求发出':event.moment==='end'?'结果返回':event.kind==='finish'?'本轮结束':'用户输入';
       for(const [key,node] of this.nodeElements){node.classList.toggle('active',key===graphEvent.node&&!graphEvent.maintenance);node.classList.toggle('visited',visited.has(key));node.classList.toggle('failed',failed.has(key));node.classList.toggle('unrecorded',!this.usedNodes.has(key));node.setAttribute('aria-disabled',String(!this.usedNodes.has(key)));node.setAttribute('tabindex',this.usedNodes.has(key)?'0':'-1');node.setAttribute('aria-label',this.usedNodes.has(key)?'查看'+nodeTitle(key)+'的事件':nodeTitle(key)+'，暂无记录');const subtitle=node.querySelector('.flow-node-subtitle');if(subtitle)subtitle.textContent=this.usedNodes.has(key)?graphNodes.find(entry=>entry[0]===key)[5]:this.timeline.hasRecords?'本轮未使用':'暂无记录';}
       for(const [key,edge] of this.edgeElements){edge.classList.toggle('recorded',recordedEdges.has(key));edge.classList.toggle('flow-current',graphEvent.edge===key);}
@@ -335,11 +342,12 @@ export class ExecutionPlayback {
   }
   renderCompaction(view,active){
     this.compactionRoot.replaceChildren();this.compactionRoot.classList.toggle('active',active);this.compactionRoot.dataset.state=view.state;
-    const head=make('div','replay-compaction-head'),state={none:'尚未压缩',running:'压缩中',completed:'已完成',unchanged:'占用未减少',error:'未完成'}[view.state];
-    head.append(make('h2',null,'上下文压缩'),make('span','replay-compaction-status',state));
-    const open=make('button','replay-batch-toggle','查看压缩详情');open.type='button';open.disabled=!view.key;open.addEventListener('click',()=>this.select(this.timeline.events.findIndex(event=>event.key===view.key)));head.append(open);this.compactionRoot.append(head);
-    const text=view.state==='none'?'本轮尚未发生压缩':compactionReason(view.reason)+(view.before_tokens!==null?' · '+tokenEstimate(view.before_tokens)+(view.after_tokens!==null?' → '+tokenEstimate(view.after_tokens):''):'');
-    this.compactionRoot.append(make('p','replay-compaction-summary',text));
+    const state={none:'尚未压缩',running:'压缩中',completed:'已完成',unchanged:'占用未减少',error:'未完成'}[view.state];
+    const available=this.timeline.events.some(event=>event.node==='compaction'&&event.kind!=='finish');
+    this.compactionRoot.disabled=!available;this.compactionRoot.setAttribute('aria-label','上下文压缩，'+state+(available?'，点击查看压缩详情':''));
+    this.compactionRoot.append(make('span','replay-compaction-title','上下文压缩'),make('span','replay-compaction-status',state));
+    if(view.before_tokens!==null){const numbers=view.before_tokens.toLocaleString('zh-CN')+(view.after_tokens!==null?' → '+view.after_tokens.toLocaleString('zh-CN'):'');this.compactionRoot.append(make('span','replay-compaction-tokens',numbers+' token（估算）'));}
+    this.compactionRoot.append(make('span','replay-compaction-hint',available?'点击查看详情':'本轮无压缩记录'));
   }
   renderBatch(snapshot){
     const savedScroll=this.batchRoot.scrollTop;this.batchRoot.replaceChildren();this.batchRoot.hidden=!snapshot;if(!snapshot)return;
