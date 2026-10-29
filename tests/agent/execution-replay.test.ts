@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {buildExecutionTimeline,executionDetailAt,executionIndexAt,type ReplayTurn} from '../../web/activity.js';
+import {buildExecutionTimeline,executionDetailAt,executionIndexAt,executionNodeIndex,type ReplayTurn} from '../../web/activity.js';
 import {formatTraceValue} from '../../web/trace-view.js';
 import type {WebActivity,WebExecutionDetail} from '../../agent/web-session.ts';
 
@@ -64,6 +64,27 @@ test('same-time events remain individually addressable and seeking clamps to the
   const at40=timeline.events.filter(event=>event.at===40);assert.deepEqual(at40.map(event=>event.key),['a:end','b:start']);
   assert.equal(timeline.events[executionIndexAt(timeline,40)].key,'b:start');
   assert.equal(executionIndexAt(timeline,-1),0);assert.equal(timeline.events[executionIndexAt(timeline,1000)].key,'finish');
+});
+
+test('graph navigation reaches tool observations and wraps through every saved return',()=>{
+  const timeline=buildExecutionTimeline(turn([item('a','tool',40),item('b','tool',60)]),{a:detail('a','tool',40,15),b:detail('b','tool',60,15)});
+  const first=executionNodeIndex(timeline,'observation');
+  assert.equal(timeline.events[first].key,'a:end');
+  const second=executionNodeIndex(timeline,'observation',first);
+  assert.equal(timeline.events[second].key,'b:end');
+  assert.equal(executionNodeIndex(timeline,'observation',second),first);
+  assert.equal(executionNodeIndex(timeline,'observation',timeline.events.length-1),first);
+  assert.equal(executionNodeIndex(timeline,'not-recorded'),-1);
+});
+
+test('graph navigation includes answer-only completions and legacy events without changing history',()=>{
+  const request=detail('answer','model',80,30,{stage:'generate',phase:'agent',input:{messages:[],tools:[{name:'retrieve_chunks'}]},output:{text:'Visible answer',tool_calls:[]}});
+  const timeline=buildExecutionTimeline(turn([item('answer','model',80)]),{answer:request}),before=structuredClone(timeline);
+  assert.equal(timeline.events[executionNodeIndex(timeline,'decision')].key,'answer:start');
+  assert.equal(timeline.events[executionNodeIndex(timeline,'generate')].key,'answer:end');
+  const legacy=buildExecutionTimeline(turn([item('old','tool',40)]));
+  assert.equal(legacy.events[executionNodeIndex(legacy,'observation')].key,'old:end');
+  assert.deepEqual(timeline,before);
 });
 
 test('live requests have no future completion and absent records do not become a simulated loop',()=>{

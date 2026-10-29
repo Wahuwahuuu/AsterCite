@@ -127,25 +127,24 @@
 .orbit-player .replay-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; flex-shrink: 0; }
 .orbit-player .replay-section-heading h2 { margin: 0; font-size: 13px; line-height: 1.5; font-weight: 650; color: #2c4937; }
 .orbit-player .replay-section-heading > span { font-size: 11px; color: var(--replay-muted); }
-.orbit-player .replay-graph { margin: 0; height: clamp(390px, 49vh, 530px); min-height: 390px; flex: 0 0 auto; overflow: visible; width: 100%; }
+.orbit-player .replay-graph { margin: 8px 0 0; height: clamp(350px, 44vh, 460px); min-height: 350px; flex: 0 0 auto; overflow: visible; width: 100%; }
 .orbit-player .replay-graph svg { display: block; width: 100%; min-width: 0; height: 100%; }
-.orbit-player .orbit-guide { fill: none; stroke: #d9e2d2; stroke-width: 2; }
-.orbit-player .orbit-inner { fill: #f9fbf5; stroke: #e6ecdf; stroke-width: 1; }
-.orbit-player .orbit-title { fill: #244732; font-size: 28px; font-weight: 650; letter-spacing: -.03em; }
-.orbit-player .orbit-phase { fill: #476249; font-size: 19px; font-weight: 500; }
-.orbit-player .orbit-count { fill: #5a7057; font-size: 16px; font-variant-numeric: tabular-nums; }
-.orbit-player .flow-edge path { stroke: #a8bda0; stroke-width: 1.6; stroke-dasharray: none; stroke-linecap: round; stroke-linejoin: round; }
-.orbit-player .flow-edge.orbit-main path { stroke: #b2c5a8; stroke-width: 2.5; }
-.orbit-player .flow-edge.orbit-route:not(.recorded) { visibility: hidden; }
-.orbit-player .flow-edge.recorded path { stroke: #78996a; }
-.orbit-player .flow-edge.flow-current path { stroke: #24563f; stroke-width: 3.5; stroke-dasharray: 12 7; }
+.orbit-player .orbit-title { fill: #5c7062; font-size: 19px; font-weight: 500; }
+.orbit-player .orbit-phase { fill: #244732; font-size: 24px; font-weight: 600; }
+.orbit-player .orbit-count { fill: #5c7062; font-size: 14px; font-variant-numeric: tabular-nums; }
+.orbit-player .orbit-connectors path { stroke: #b5c5ad; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+.orbit-player .orbit-exit-label { fill: #5c7062; font-size: 12px; }
+.orbit-player .replay-transition { margin: 0 0 10px; min-height: 28px; padding: 4px 0; color: #476249; text-align: center; font-size: 12px; line-height: 1.6; }
+.orbit-player.graph-collapsed .replay-transition { display: none; }
+.orbit-player .flow-edge path { stroke: #c4d2bc; stroke-width: 2; stroke-dasharray: none; stroke-linecap: round; stroke-linejoin: round; }
+.orbit-player .flow-edge.recorded path { stroke: #88a17a; }
+.orbit-player .flow-edge.flow-current path { stroke: #24563f; stroke-width: 2.8; stroke-dasharray: 12 7; }
 .orbit-player.is-animating .flow-edge.flow-current path { animation: orbit-travel 1.8s linear infinite; }
 .orbit-player .flow-node rect,
 .orbit-player .orbit-node-disc { fill: #fcfdf9; stroke: #adc0a4; stroke-width: 1.5; transition: fill .2s ease-out, stroke .2s ease-out; }
-.orbit-player .flow-node-title { fill: #35543b; font-size: 20px; font-weight: 600; }
-.orbit-player .flow-node-subtitle { fill: #5a7057; font-size: 16px; font-weight: 400; }
+.orbit-player .flow-node-title { fill: #35543b; font-size: 19px; font-weight: 600; }
+.orbit-player .flow-node-subtitle { fill: #5a7057; font-size: 14px; font-weight: 400; }
 .orbit-player .orbit-node .flow-node-title { font-size: 19px; }
-.orbit-player .orbit-node .flow-node-subtitle { font-size: 17px; }
 .orbit-player .orbit-node-icon { fill: none; stroke: #36573d; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .orbit-player .orbit-node-focus { fill: none; stroke: transparent; stroke-width: 1.5; transition: stroke .2s ease-out; }
 .orbit-player .flow-node.visited rect,
@@ -156,7 +155,6 @@
 .orbit-player .flow-node.active .flow-node-title { fill: #fff; }
 .orbit-player .flow-node.active .orbit-node-icon { stroke: #fff; }
 .orbit-player .orbit-stage.active .flow-node-subtitle { fill: #e2efda; }
-.orbit-player .orbit-node.active .flow-node-subtitle { fill: #24563f; font-weight: 550; }
 .orbit-player .flow-node.unrecorded rect,
 .orbit-player .flow-node.unrecorded .orbit-node-disc { fill: #f4f6ef; stroke: #ccd7c5; stroke-dasharray: 3 4; }
 .orbit-player .flow-node.unrecorded text { fill: #6d7d65; }

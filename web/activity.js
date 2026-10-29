@@ -50,6 +50,12 @@ export function executionIndexAt(timeline,at){
   while(low<high){const mid=Math.ceil((low+high)/2);if(timeline.events[mid].at<=at)low=mid;else high=mid-1;}return low;
 }
 
+export function executionNodeIndex(timeline,node,after=-1){
+  const matches=event=>event.node===node&&event.kind!=='finish';
+  const next=timeline.events.findIndex((event,index)=>index>after&&matches(event));
+  return next>=0?next:timeline.events.findIndex(matches);
+}
+
 /** Historical start events must not reveal their future output or final duration. */
 export function executionDetailAt(detail,event){
   if(!detail)return null;
@@ -77,26 +83,17 @@ const SVG='http://www.w3.org/2000/svg';
 function vector(tag,attributes={},text){const n=document.createElementNS(SVG,tag);for(const [key,value] of Object.entries(attributes))n.setAttribute(key,String(value));if(text!==undefined)n.textContent=text;return n;}
 let graphId=0;
 const graphNodes=[
-  ['question',28,22,132,'用户问题','提出研究问题'],['understand',216,22,168,'理解与准备','确定目标与范围'],
-  ['decision',300,135,0,'模型决策','选择工具或回答'],['action',447,390,0,'调用工具','检索与读取原文'],
-  ['observation',153,390,0,'观察返回','读取结果与证据'],['generate',220,542,160,'整理回答','生成与核对引用'],['memory',436,542,136,'会话记忆','保存本轮进展']
+  ['question',36,12,190,'用户问题','本轮输入'],['understand',310,12,214,'理解与准备','上下文与检索计划'],
+  ['decision',280,146,0,'模型决策','选择工具或回答'],['action',403,359,0,'调用工具','检索与读取原文'],
+  ['observation',157,359,0,'观察返回','读取结果与证据'],['generate',76,504,184,'整理回答','生成与核对引用'],['memory',322,504,162,'会话记忆','保存阅读进展']
 ];
 const graphEdges=[
-  ['question-understand','M166 44 H208'],['understand-decision','M300 70 V84'],
-  ['decision-action','M350 142 A170 170 0 0 1 466 343'],
-  ['action-observation','M417 425 A170 170 0 0 1 183 425'],
-  ['observation-decision','M134 343 A170 170 0 0 1 250 142'],
-  ['understand-action','M390 44 H566 V390 H498'],
-  ['observation-action','M175 431 Q300 523 425 431'],
-  ['observation-generate','M153 438 C153 502 245 493 260 534'],
-  ['decision-generate','M350 135 C552 160 560 520 388 568'],
-  ['generate-decision','M212 568 C18 550 12 195 250 135'],
-  ['understand-generate','M208 44 H16 V568 H212'],
-  ['generate-memory','M386 568 H428'],
-  ['generate-generate','M240 596 C202 636 376 636 342 596']
+  ['decision-action','M334.34 156.81 A142 142 0 0 1 420.79 306.54'],
+  ['action-observation','M366.45 400.66 A142 142 0 0 1 193.55 400.66'],
+  ['observation-decision','M139.21 306.54 A142 142 0 0 1 225.66 156.81']
 ];
 const coreNodes=new Set(['decision','action','observation']);
-const coreEdges=new Set(['decision-action','action-observation','observation-decision']);
+const nodeTitle=node=>graphNodes.find(entry=>entry[0]===node)?.[4]??'执行记录';
 
 export class ExecutionPlayback {
   constructor(root,turn,details={},options={}){
@@ -121,7 +118,7 @@ export class ExecutionPlayback {
     const captions=make('div','replay-captions');this.eventCount=make('span');this.durationLabel=make('span');captions.append(make('span',null,'开始'),this.eventCount,this.durationLabel);timeline.append(captions);transport.append(timeline);
     const body=make('div','replay-body'),overview=make('section','replay-overview'),graphHead=make('div','replay-section-heading');
     graphHead.append(make('h2',null,'执行全景'),make('span',null,'点击节点，切换对应事件'));overview.append(graphHead);
-    this.graph=make('div','replay-graph');this.graph.setAttribute('aria-label','决策、调用工具、观察返回组成环形交互循环');overview.append(this.graph);this.buildGraph();
+    this.graph=make('div','replay-graph');this.graph.setAttribute('aria-label','决策、调用工具、观察返回组成环形交互循环');this.transition=make('p','replay-transition');overview.append(this.graph,this.transition);this.buildGraph();
     const eventsHead=make('div','replay-section-heading replay-events-heading');eventsHead.append(make('h2',null,'执行记录'));this.listCounter=make('span');eventsHead.append(this.listCounter);
     this.eventsList=make('ol','replay-events');this.eventsList.setAttribute('aria-label','本轮执行事件');overview.append(eventsHead,this.eventsList);
     const inspector=make('section','replay-inspector'),detailHead=make('div','replay-section-heading');detailHead.append(make('h2',null,'事件详情'));this.phaseLabel=make('span','replay-phase');detailHead.append(this.phaseLabel);
@@ -129,23 +126,25 @@ export class ExecutionPlayback {
     this.note=make('p','replay-note');this.root.append(this.note);
   }
   buildGraph(){
-    const id='replay-arrow-'+(++graphId),svg=vector('svg',{viewBox:'0 0 600 640',role:'group','aria-label':'环形 Agent Loop：模型决策、调用工具、观察返回；回答和记忆在循环之外'});
+    const id='replay-arrow-'+(++graphId),svg=vector('svg',{viewBox:'0 0 560 570',role:'group','aria-label':'阶段概览：准备、Agent 循环、回答与记忆；具体执行顺序见当前事件'});
     const defs=vector('defs'),marker=vector('marker',{id,viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'});marker.append(vector('path',{d:'M1 1 L9 5 L1 9',fill:'none',stroke:'context-stroke','stroke-width':1.5}));defs.append(marker);svg.append(defs);
-    svg.append(vector('circle',{cx:300,cy:305,r:170,class:'orbit-guide'}),vector('circle',{cx:300,cy:305,r:132,class:'orbit-inner'}));
-    svg.append(vector('text',{x:300,y:292,'text-anchor':'middle',class:'orbit-title'},'Agent Loop'));
-    this.orbitPhase=vector('text',{x:300,y:320,'text-anchor':'middle',class:'orbit-phase'});this.orbitCount=vector('text',{x:300,y:348,'text-anchor':'middle',class:'orbit-count'});svg.append(this.orbitPhase,this.orbitCount);
+    const connectors=vector('g',{class:'orbit-connectors','aria-hidden':'true'});
+    for(const d of ['M234 34 H302','M417 64 V82 H280 V94','M280 442 V474 H168 V496','M268 526 H314'])connectors.append(vector('path',{d,fill:'none','marker-end':`url(#${id})`}));
+    connectors.append(vector('text',{x:294,y:470,class:'orbit-exit-label'},'结束循环'));svg.append(connectors);
+    svg.append(vector('text',{x:280,y:269,'text-anchor':'middle',class:'orbit-title'},'Agent Loop'));
+    this.orbitPhase=vector('text',{x:280,y:299,'text-anchor':'middle',class:'orbit-phase'});this.orbitCount=vector('text',{x:280,y:325,'text-anchor':'middle',class:'orbit-count'});svg.append(this.orbitPhase,this.orbitCount);
     this.edgeElements=new Map();
-    for(const [key,d] of graphEdges){const group=vector('g',{class:'flow-edge'+(coreEdges.has(key)?' orbit-main':' orbit-route')}),path=vector('path',{d,fill:'none','marker-end':`url(#${id})`});group.append(path);this.edgeElements.set(key,group);svg.append(group);}
+    for(const [key,d] of graphEdges){const group=vector('g',{class:'flow-edge orbit-main'}),path=vector('path',{d,fill:'none','marker-end':`url(#${id})`});group.append(path);this.edgeElements.set(key,group);svg.append(group);}
     this.nodeElements=new Map();
     for(const [key,x,y,width,title,subtitle] of graphNodes){
       const round=coreNodes.has(key),group=vector('g',{class:'flow-node '+(round?'orbit-node':'orbit-stage'),role:'button',tabindex:0,'aria-label':'切换到'+title});
       if(round){
-        group.append(vector('circle',{cx:x,cy:y,r:44,class:'orbit-node-disc'}),vector('circle',{cx:x,cy:y,r:50,class:'orbit-node-focus'}));
+        group.append(vector('circle',{cx:x,cy:y,r:46,class:'orbit-node-disc'}),vector('circle',{cx:x,cy:y,r:51,class:'orbit-node-focus'}));
         const icon=vector('g',{transform:`translate(${x} ${y-12})`,class:'orbit-node-icon','aria-hidden':'true'});
         const paths={decision:['M-8-7H3V-1H8V7','M3-7L8-2M3-7L-2-2','M-8-7V7H-3'],action:['M-10-7H10V7H-10Z','M-6-2H6M-6 2H1'],observation:['M-10 0C-5-9 5-9 10 0C5 9-5 9-10 0Z','M-3 0A3 3 0 1 0 3 0A3 3 0 1 0-3 0']};
-        for(const d of paths[key])icon.append(vector('path',{d}));group.append(icon,vector('text',{x,y:y+18,'text-anchor':'middle',class:'flow-node-title'},title),vector('text',{x,y:y+68,'text-anchor':'middle',class:'flow-node-subtitle'},subtitle));
-      }else group.append(vector('rect',{x,y,width,height:52,rx:12}),vector('text',{x:x+width/2,y:y+22,'text-anchor':'middle',class:'flow-node-title'},title),vector('text',{x:x+width/2,y:y+40,'text-anchor':'middle',class:'flow-node-subtitle'},subtitle));
-      const jump=()=>{const all=this.timeline?.events.map((event,index)=>({event,index})).filter(({event})=>event.node===key&&(event.moment==='start'||event.moment==='point'||event.legacy))??[];const next=all.find(({index})=>index>this.index)??all[0];if(next)this.select(next.index);};
+        for(const d of paths[key])icon.append(vector('path',{d}));group.append(icon,vector('text',{x,y:y+18,'text-anchor':'middle',class:'flow-node-title'},title));
+      }else group.append(vector('rect',{x,y,width,height:44,rx:10}),vector('text',{x:x+width/2,y:y+19,'text-anchor':'middle',class:'flow-node-title'},title),vector('text',{x:x+width/2,y:y+35,'text-anchor':'middle',class:'flow-node-subtitle'},subtitle));
+      const jump=()=>{if(!this.timeline)return;const next=executionNodeIndex(this.timeline,key,this.index);if(next>=0)this.select(next);};
       group.addEventListener('click',jump);group.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();jump();}});this.nodeElements.set(key,group);svg.append(group);
     }this.graph.append(svg);
   }
@@ -159,7 +158,7 @@ export class ExecutionPlayback {
     if(!this.live){this.follow=false;if(wasFollowing)this.pause();}
     this.question.textContent=turn.question;const items=turn.activity??[],models=items.filter(item=>item.kind==='model').length,tools=items.filter(item=>item.kind==='tool').length;
     this.summary.textContent=(this.live?'实时执行':turn.status==='completed'?'本轮已完成':'本轮未完成')+` · ${models} 次模型请求 · ${tools} 次工具调用`;
-    this.usedNodes=new Set(this.timeline.events.map(event=>event.node));this.usedEdges=new Set(this.timeline.events.map(event=>event.edge));
+    this.usedNodes=new Set(this.timeline.events.map(event=>event.node));
     this.listCounter.textContent=this.timeline.events.length+' 个事件';
     this.eventsList.replaceChildren();this.eventButtons=[];
     for(const [index,event] of this.timeline.events.entries()){
@@ -197,11 +196,14 @@ export class ExecutionPlayback {
       const visited=new Set(this.timeline.events.slice(0,this.index+1).map(item=>item.node));
       const past=this.timeline.events.slice(0,this.index+1),decisions=new Set(past.filter(item=>item.kind==='model'&&item.node==='decision').map(item=>item.id)).size,tools=new Set(past.filter(item=>item.kind==='tool').map(item=>item.id)).size;
       const failed=new Set(past.filter(item=>item.status==='error').map(item=>item.node));
-      this.orbitPhase.textContent=graphNodes.find(entry=>entry[0]===event.node)?.[4]??'等待开始';
-      this.orbitCount.textContent=!this.timeline.hasRecords?'暂无执行记录':decisions?decisions+' 次模型决策 · '+tools+' 次工具调用':this.usedNodes.has('action')?'等待进入执行':'暂无工具调用';
+      this.orbitPhase.textContent=event.kind==='finish'?event.title:nodeTitle(event.node);
+      this.orbitCount.textContent=!this.timeline.hasRecords?'暂无执行记录':decisions+' 次决策 · '+tools+' 次工具';
+      const previous=this.timeline.events[this.index-1],recordedEdges=new Set(past.map(item=>item.edge));
+      const route=event.edge&&previous?nodeTitle(previous.node)+' → '+nodeTitle(event.node):event.title;
+      this.transition.textContent=!this.timeline.hasRecords?'暂无执行记录':event.kind==='finish'?event.title:route+(event.kind==='tool'&&event.moment==='start'&&(event.detail?.origin??event.item?.origin)==='host_plan'?' · 按检索计划执行':'');
       this.phaseLabel.textContent=event.moment==='start'?'请求发出':event.moment==='end'?'结果返回':event.kind==='finish'?'本轮结束':'用户输入';
-      for(const [key,node] of this.nodeElements){node.classList.toggle('active',key===event.node);node.classList.toggle('visited',visited.has(key));node.classList.toggle('failed',failed.has(key));node.classList.toggle('unrecorded',!this.usedNodes.has(key));node.setAttribute('aria-disabled',String(!this.usedNodes.has(key)));node.setAttribute('tabindex',this.usedNodes.has(key)?'0':'-1');node.querySelector('.flow-node-subtitle').textContent=this.usedNodes.has(key)?graphNodes.find(entry=>entry[0]===key)[5]:this.timeline.hasRecords?'本轮未使用':'暂无记录';}
-      for(const [key,edge] of this.edgeElements){edge.classList.toggle('recorded',this.usedEdges.has(key));edge.classList.toggle('flow-current',event.edge===key);}
+      for(const [key,node] of this.nodeElements){node.classList.toggle('active',key===event.node);node.classList.toggle('visited',visited.has(key));node.classList.toggle('failed',failed.has(key));node.classList.toggle('unrecorded',!this.usedNodes.has(key));node.setAttribute('aria-disabled',String(!this.usedNodes.has(key)));node.setAttribute('tabindex',this.usedNodes.has(key)?'0':'-1');node.setAttribute('aria-label',this.usedNodes.has(key)?'查看'+nodeTitle(key)+'的事件':nodeTitle(key)+'，暂无记录');const subtitle=node.querySelector('.flow-node-subtitle');if(subtitle)subtitle.textContent=this.usedNodes.has(key)?graphNodes.find(entry=>entry[0]===key)[5]:this.timeline.hasRecords?'本轮未使用':'暂无记录';}
+      for(const [key,edge] of this.edgeElements){edge.classList.toggle('recorded',recordedEdges.has(key));edge.classList.toggle('flow-current',event.edge===key);}
       for(const [index,button] of this.eventButtons.entries()){button.classList.toggle('selected',index===this.index);if(index===this.index)button.setAttribute('aria-current','step');else button.removeAttribute('aria-current');}
       if(this.paintedKey!==event.key){this.detailRoot.dataset.tab=event.moment==='end'?'output':'input';this.renderDetail(event);this.eventsList.querySelector('[aria-current]')?.scrollIntoView({block:'nearest'});}
       else this.renderDetail(event);
