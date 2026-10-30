@@ -28,7 +28,7 @@ python scripts/restore_corpus.py --download
 python scripts/download_models.py
 ```
 
-语料来自 QASPER。脚本会下载论文文本和检索模型，文件保存在本地。
+语料来自 QASPER。脚本会下载论文文本和检索模型，并将文件保存在本地。
 
 ## 构建索引
 
