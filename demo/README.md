@@ -17,4 +17,4 @@ npm run paper -- --session demo
 3. 用 `/memory` 查看约束，用 `/trace` 查看执行过程。
 4. 用 `/compact` 压缩上下文，再次启动同名会话继续问答。
 
-示例数据保存在 `dialogue.json`。
+示例数据存放在 `dialogue.json` 中。
