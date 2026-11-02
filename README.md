@@ -64,7 +64,7 @@ npm run doctor
 npm run web -- --live
 ```
 
-网页会保存会话。更换模型或普通程序升级后，可继续已有网页对话。网页用法与服务器部署见 [网页指南](docs/web.md)。
+网页会保存会话。更换模型或普通程序升级后，可以继续使用已有的网页对话。网页用法与服务器部署见 [网页指南](docs/web.md)。
 
 模型服务需支持 OpenAI Chat Completions、流式响应与工具调用。配置字段和密钥设置方法见 [配置指南](docs/configuration.md)。
 
