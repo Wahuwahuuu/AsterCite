@@ -49,7 +49,7 @@ npm ci --ignore-scripts
 npm run web
 ```
 
-打开 `http://127.0.0.1:4173` 查看多轮问答示例，点击引用阅读原文。终端回放可使用 `npm run demo`。
+打开 `http://127.0.0.1:4173` 查看多轮问答示例，点击引用阅读原文。可使用 `npm run demo` 在终端回放。
 
 完整问答还需要 Python **3.12** 和本地检索环境。先按 [安装指南](docs/environment.md) 准备依赖、论文库、模型和索引，再配置模型：
 
