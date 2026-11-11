@@ -12,7 +12,7 @@ npm run demo
 npm run paper -- --session demo
 ```
 
-1. 用 `/corpus` 搜索论文，`/scope` 设置范围。
+1. 使用 `/corpus` 搜索论文，并用 `/scope` 设置范围。
 2. 连续提问，比较论文方法或纠正回答要求。
 3. 用 `/memory` 查看约束，用 `/trace` 查看执行过程。
 4. 用 `/compact` 压缩上下文，再次启动同名会话继续问答。
